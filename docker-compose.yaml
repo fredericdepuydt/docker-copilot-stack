@@ -1,0 +1,15 @@
+services:
+  copilot:
+    build: ./build/copilot
+    container_name: copilot
+    working_dir: /workspace
+    volumes:
+      - ./config/copilot/config.json:/workspace/.copilot/config.json
+    #stdin_open: true
+    #tty: true
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - COPILOT_CONFIG_DIR=${COPILOT_CONFIG_DIR:-/workspace/.copilot}
+      - COPILOT_AUTO_ALLOW_ALL=${COPILOT_AUTO_ALLOW_ALL:-0}
+    restart: no

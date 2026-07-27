@@ -1,0 +1,4 @@
+.copilot/
+config/copilot/
+build/copilot/certs/*.crt
+!build/copilot/certs/.gitkeep
