@@ -18,6 +18,7 @@ $dockerArgs = @(
     "-f", $ComposeFile,
     "run", "--rm", "-it",
     "-v", "${Workspace}:/workspace",
+    "copilot",
     "copilot"
 )
 $dockerArgs += $CopilotArgs
