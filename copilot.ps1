@@ -402,7 +402,7 @@ function Invoke-CopilotLauncher {
 
     $dockerArgs = @(
         "-f", $composeFile,
-        "run", "--rm", "-it",
+        "run", "--rm",
         "-v", "${root}:/workspace",
         "--workdir", $containerWorkspace,
         "-e", "COPILOT_CONFIG_DIR=$containerConfig",

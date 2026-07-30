@@ -8,6 +8,7 @@ This repository builds and runs the GitHub Copilot CLI in Docker. Use this file 
 - Run Copilot as a non-root user created from `PUID`/`PGID`.
 - Support corporate/custom CA certificates during image build.
 - Provide .NET SDKs (`8.0`, `10.0`) inside the same image.
+- Provide equivalent Linux and Windows host launchers and installers.
 
 ## Source of truth
 
@@ -15,6 +16,8 @@ This repository builds and runs the GitHub Copilot CLI in Docker. Use this file 
 - `build/copilot/Dockerfile`: base image, apt dependencies, cert install, Copilot install.
 - `build/copilot/entrypoint.sh`: UID/GID mapping, user/group creation, `.copilot` symlink setup, `gosu` handoff.
 - `build/copilot/certs/`: additional CA certificates (`.crt`) installed into trust store.
+- `copilot` and `install`: Linux launcher and user-local installer.
+- `copilot.ps1` and `install.ps1`: PowerShell launcher and installer.
 - `README.md`: operator-facing usage and examples.
 
 ## Change rules
@@ -39,6 +42,9 @@ docker-compose run --rm copilot copilot --help
 
 # Verify SDK availability when toolchain layers changed
 docker-compose run --rm copilot dotnet --list-sdks
+
+# Linux launcher and installer behavior
+./tests/copilot.Tests.sh
 ```
 
 ## Notes for agents

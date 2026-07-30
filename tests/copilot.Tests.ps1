@@ -180,6 +180,7 @@ try {
     Assert-Equal -Expected "chat" -Actual $global:CopilotTestDockerArgs[$allowIndex + 2] -Message "First user argument order."
     Assert-Equal -Expected "--model" -Actual $global:CopilotTestDockerArgs[$allowIndex + 3] -Message "Second user argument order."
     Assert-Equal -Expected "test-model" -Actual $global:CopilotTestDockerArgs[$allowIndex + 4] -Message "Third user argument order."
+    Assert-True -Condition ($global:CopilotTestDockerArgs -notcontains "-it") -Message "Unsupported Compose -it flag was forwarded."
 
     $windowsRelative = Get-RelativeWorkspacePath `
         -Root "C:\Source\Codebase" `
