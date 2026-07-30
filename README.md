@@ -1,41 +1,22 @@
 # GitHub Copilot CLI Container
 
-A Docker container that runs the [GitHub Copilot CLI](https://www.npmjs.com/package/@github/copilot) in an isolated environment, with your local workspace mounted inside.
+A Docker container that runs the [GitHub Copilot CLI](https://www.npmjs.com/package/@github/copilot) with a host codebase mounted for editing.
 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
 - [Docker Compose](https://docs.docker.com/compose/install/)
+- PowerShell for the `copilot` launcher
 
 ## Quick Start
 
-### Build the image
+Build the image:
 
 ```bash
 docker-compose build
 ```
 
-### Run once and destroy
-
-Run a command, then automatically remove the container when it exits:
-
-```bash
-docker-compose run --rm copilot copilot --help
-```
-
-This is the recommended way to use the container for one-off tasks — a single command that starts a fresh container, runs Copilot, and cleans up afterwards.
-
-### Interactive session
-
-For interactive use (e.g., guided conversations with Copilot), enable a TTY:
-
-```bash
-docker-compose run --rm -it copilot copilot chat
-```
-
-### PowerShell launcher
-
-Run `install.ps1` to add a `copilot` function to your PowerShell profile. The function runs `copilot.ps1`, which mounts your current directory as `/workspace` and starts an interactive Copilot session in the container:
+Install the PowerShell launcher:
 
 ```powershell
 .\install.ps1
@@ -43,29 +24,122 @@ Run `install.ps1` to add a `copilot` function to your PowerShell profile. The fu
 copilot
 ```
 
-Pass arguments straight through to the CLI when needed:
+Arguments are forwarded to the Copilot CLI after the required access flags:
 
 ```powershell
 copilot chat
 copilot --help
 ```
 
-### Long-running / background
+The effective CLI invocation always includes `--allow-all-paths --yolo`.
 
-To start the container in the background (it will exit immediately unless given a persistent command):
+For direct Compose usage:
 
 ```bash
-docker-compose up -d
-docker-compose down   # stop and remove
+docker-compose run --rm -it copilot copilot --help
 ```
+
+## Root and Workspace
+
+The PowerShell launcher treats the named folders in a VS Code `.code-workspace` file as two separate concepts:
+
+- `Root`: the complete codebase bind-mounted at `/workspace`.
+- `Workspace`: the project or solution directory where Copilot starts.
+
+The names are matched case-insensitively. `Workspace` must be equal to or contained inside `Root`. Both paths are resolved relative to the `.code-workspace` file and must exist.
+
+```jsonc
+{
+  "folders": [
+    {
+      "name": "Root",
+      "path": "../.."
+    },
+    {
+      "name": "Workspace",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "terminal.integrated.cwd": "${workspaceFolder:Workspace}"
+  }
+}
+```
+
+Comments and trailing commas in normal VS Code JSONC files are supported.
+
+### .NET solution with shared libraries
+
+For this layout:
+
+```text
+C:\Source\Codebase
+|-- Libraries
+|   `-- Shared
+`-- Applications
+    `-- MyApplication
+        |-- MyApplication.sln
+        `-- MyApplication.code-workspace
+```
+
+Put the example workspace file above in `MyApplication`. Launching `copilot` there produces:
+
+```text
+Host Root       C:\Source\Codebase
+Host Workspace  C:\Source\Codebase\Applications\MyApplication
+Docker mount    C:\Source\Codebase -> /workspace
+Container cwd   /workspace/Applications/MyApplication
+Copilot config  /workspace/Applications/MyApplication/.copilot
+```
+
+Copilot starts beside `MyApplication.sln` but can read and edit `Libraries\Shared` through the complete Root mount. Paths containing spaces are passed to Docker as individual PowerShell arguments.
+
+### Workspace discovery
+
+The launcher searches only the current directory for `*.code-workspace`.
+
+- One file: it is selected automatically.
+- Multiple files: the launcher asks which file to use.
+- No files: the launcher prompts:
+
+```text
+No VS Code workspace file was found.
+Create one with Root and Workspace both pointing to "."? [Y/n]
+```
+
+Accepting creates `workspace.code-workspace` with both named folders pointing to `"."`. Declining uses the current directory as both Root and Workspace for that run without creating a file. Root and Workspace may resolve to the same directory.
+
+Before Docker starts, the resolved mapping is displayed:
+
+```text
+VS Code workspace: <workspace-file>
+Host root:          <resolved-root>
+Host workspace:     <resolved-workspace>
+Docker mount:       <resolved-root> -> /workspace
+Container cwd:      <container-workspace>
+Copilot config:     <container-workspace>/.copilot
+Copilot mode:       YOLO, all paths allowed
+```
+
+When no workspace file is used, `VS Code workspace` displays `<current directory defaults>`.
+
+### Workspace-scoped Copilot state and instructions
+
+`COPILOT_CONFIG_DIR` is set to `Workspace/.copilot` inside the mounted Root. Existing project-specific Copilot configuration and session state therefore remain persistent across container runs.
+
+The container working directory is set to Workspace, so Copilot discovers the project-specific `AGENTS.md` relative to that directory. The launcher does not copy `AGENTS.md` to Root. Instructions closer to files in shared-library directories can still apply through Copilot's normal hierarchical instruction discovery.
+
+## Security
+
+The PowerShell launcher always enables both `--allow-all-paths` and `--yolo`. Copilot can execute tools without confirmation and can read, create, modify, or delete files anywhere under the mounted Root, including sibling projects and shared libraries.
+
+Only launch it from a trusted codebase, review the resolved directories printed before startup, and keep Root as narrow as practical. An incorrect Root grants edit access to more host files than intended; invalid or out-of-root workspace mappings are rejected rather than silently widened.
 
 ## Configuration
 
-### .NET SDKs in the container
+### .NET SDKs
 
-The image now installs both `.NET 8` and `.NET 10` SDKs so mixed-version solutions can build in the same container.
-
-After rebuilding, verify inside the container:
+The image includes .NET 8 and .NET 10 SDKs:
 
 ```bash
 docker-compose run --rm copilot dotnet --list-sdks
@@ -73,78 +147,20 @@ docker-compose run --rm copilot dotnet --list-sdks
 
 ### User ID mapping
 
-By default the container runs as `appuser` with UID/GID `1000:1000`. If your host user has a different ID, set `PUID` and `PGID` so that files written to `/workspace` are owned by you:
+The container uses UID/GID `1000:1000` by default. Set `PUID` and `PGID` to match the host user when needed:
 
 ```bash
 PUID=$(id -u) PGID=$(id -g) docker-compose run --rm copilot copilot --help
 ```
 
-Or export them in your shell profile so you never have to think about it:
-
-```bash
-export PUID=$(id -u)
-export PGID=$(id -g)
-```
-
 ### Copilot version
 
-The Copilot CLI version is controlled by the `COPILOT_VERSION` build argument (defaults to `latest`):
+`COPILOT_VERSION` defaults to `latest`:
 
 ```bash
 docker-compose build --build-arg COPILOT_VERSION=1.0.0
 ```
 
-### Corporate / proxy networks
+### Corporate or proxy networks
 
-If you are behind a corporate proxy with a custom CA, place your `.crt` certificate files in `build/copilot/certs/` before building. They are automatically installed into the system trust store and configured for npm.
-
-## Workspace
-
-When you start Copilot through `copilot.ps1` or the installed `copilot` PowerShell function, your current directory is mounted to `/workspace` inside the container, which is also the working directory. Any files Copilot reads or writes will go there.
-
-If you want to point the container at a specific directory when running `docker-compose` directly, pass an explicit bind mount on the command line:
-
-```bash
-docker-compose run --rm -it -v /path/to/your/project:/workspace copilot copilot chat
-```
-
-### Workspace-scoped Copilot session state
-
-Copilot config/session state is now stored in `./.copilot` (inside your mounted workspace) by default.
-This keeps session resume scoped to that project directory.
-
-- Default inside container: `/workspace/.copilot`
-- Override location (optional): set `COPILOT_CONFIG_DIR`
-
-## Authentication
-
-Copilot stores its token and session data in the workspace-scoped `.copilot` directory.
-Because that path is inside the bind-mounted workspace, it persists across container runs for that workspace only.
-
-```yaml
-volumes:
-  - ./:/workspace
-```
-
-
-### Optional: auto-run `/allow-all` at chat startup
-
-If you want interactive sessions to automatically execute `/allow-all` once at startup, this repo includes an opt-in wrapper based on `expect`.
-
-Enable it only for a trusted environment:
-
-```bash
-COPILOT_AUTO_ALLOW_ALL=1 docker-compose run --rm -it copilot copilot chat
-```
-
-Disable (default behavior):
-
-```bash
-COPILOT_AUTO_ALLOW_ALL=0 docker-compose run --rm -it copilot copilot chat
-```
-
-Notes:
-
-- This only applies to the exact command `copilot chat`.
-- Non-interactive commands such as `copilot --help` are unaffected.
-- `expect` sends `/allow-all` once and then hands control back to your terminal.
+Place custom `.crt` certificate files in `build/copilot/certs/` before building. They are installed into the system trust store and configured for npm.

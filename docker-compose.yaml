@@ -3,8 +3,6 @@ services:
     build: ./build/copilot
     container_name: copilot
     working_dir: /workspace
-    volumes:
-      - ./config/copilot/config.json:/workspace/.copilot/config.json
     #stdin_open: true
     #tty: true
     environment:
