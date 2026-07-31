@@ -38,12 +38,13 @@ WORKDIR /workspace
 
 # Copy the entrypoint script into the container and make it executable.
 COPY entrypoint.sh /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 # Label for image cleanup
 LABEL project="copilot"
 
 # The entrypoint script will handle user creation and command execution.
-ENTRYPOINT [ "entrypoint.sh" ]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # The default command to run if none is provided.
 CMD [ "copilot", "--banner" ]
