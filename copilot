@@ -30,11 +30,27 @@ select_compose_command() {
     fi
 }
 
+sanitize_project_name() {
+    local project_name=$1
+    project_name=${project_name,,}
+    project_name=$(printf '%s' "$project_name" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+    [[ -n "$project_name" ]] || project_name=project
+    printf '%s' "$project_name"
+}
+
+container_name_for() {
+    local project_name=$1
+    printf 'copilot-%s-%s' "$(sanitize_project_name "$project_name")" "$(date -u +%Y%m%d-%H%M%S)"
+}
+
 run_stack_management_command() {
     local command=$1
     local user_id
     local group_id
     local exit_code
+    local container_name
+
+    container_name=$(container_name_for "$(basename -- "$PWD")")
 
     user_id=$(id -u)
     group_id=$(id -g)
@@ -43,6 +59,7 @@ run_stack_management_command() {
     if "${COMPOSE_COMMAND[@]}" \
         -f "$COMPOSE_FILE" \
         run --rm \
+        --name "$container_name" \
         -e "PUID=$user_id" \
         -e "PGID=$group_id" \
         copilot "$command"; then
@@ -363,7 +380,7 @@ WORKSPACE_DISPLAY="<current directory defaults>"
 if [[ ${#WORKSPACE_FILES[@]} -gt 0 ]]; then
     select_workspace_file
 elif confirm_workspace_file_creation; then
-    SELECTED_WORKSPACE_FILE="$CURRENT_DIRECTORY/workspace.code-workspace"
+    SELECTED_WORKSPACE_FILE="$CURRENT_DIRECTORY/$(basename -- "$CURRENT_DIRECTORY").code-workspace"
     create_default_workspace_file "$SELECTED_WORKSPACE_FILE"
 fi
 
@@ -399,6 +416,12 @@ else
     CONTAINER_WORKSPACE="/workspace/$RELATIVE_WORKSPACE"
 fi
 CONTAINER_CONFIG="$CONTAINER_WORKSPACE/.copilot"
+PROJECT_NAME=$(basename -- "$WORKSPACE")
+if [[ -n "$SELECTED_WORKSPACE_FILE" ]]; then
+    WORKSPACE_PROJECT_NAME=$(basename -- "$SELECTED_WORKSPACE_FILE" .code-workspace)
+    [[ -n "$WORKSPACE_PROJECT_NAME" ]] && PROJECT_NAME=$WORKSPACE_PROJECT_NAME
+fi
+CONTAINER_NAME=$(container_name_for "$PROJECT_NAME")
 USER_ID=$(id -u)
 GROUP_ID=$(id -g)
 
@@ -409,6 +432,7 @@ printf 'Docker mount:       %s -> /workspace\n' "$ROOT"
 printf 'Container cwd:      %s\n' "$CONTAINER_WORKSPACE"
 printf 'Copilot config:     %s\n' "$CONTAINER_CONFIG"
 printf 'Container user:     %s:%s\n' "$USER_ID" "$GROUP_ID"
+printf 'Container name:     %s\n' "$CONTAINER_NAME"
 echo "Copilot mode:       YOLO, all paths allowed"
 
 select_compose_command
@@ -426,6 +450,7 @@ done
 DOCKER_ARGUMENTS=(
     -f "$COMPOSE_FILE"
     run --rm
+    --name "$CONTAINER_NAME"
     -v "$ROOT:/workspace"
     --workdir "$CONTAINER_WORKSPACE"
     -e "COPILOT_CONFIG_DIR=$CONTAINER_CONFIG"

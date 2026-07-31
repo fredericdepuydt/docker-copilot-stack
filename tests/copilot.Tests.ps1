@@ -171,6 +171,8 @@ try {
     Invoke-TestLauncher -WorkingDirectory $nestedWorkspace -Arguments @("chat", "--model", "test-model") | Out-Null
     Assert-Equal -Expected "/workspace/Applications/Area/My Application" -Actual (Get-DockerArgumentAfter "--workdir") -Message "Nested workspace cwd."
     Assert-Equal -Expected "${rootWithSpaces}:/workspace" -Actual (Get-DockerArgumentAfter "-v") -Message "Root mount with spaces."
+    Assert-Equal -Expected "--name" -Actual (Get-DockerArgumentAfter "--name") -Message "Container name option."
+    Assert-True -Condition ((Get-DockerArgumentAfter "--name") -match "^copilot-nested-\d{8}-\d{6}$") -Message "Unexpected workspace container name."
     Assert-Equal -Expected "COPILOT_CONFIG_DIR=/workspace/Applications/Area/My Application/.copilot" -Actual (Get-DockerArgumentAfter "-e") -Message "Nested workspace config path."
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $persistentConfig "existing-state")) -Message "Existing .copilot state was not preserved."
 
@@ -209,7 +211,7 @@ try {
     $createDirectory = Join-Path $testRoot "creation accepted"
     New-Item -ItemType Directory -Path $createDirectory | Out-Null
     Invoke-TestLauncher -WorkingDirectory $createDirectory -PromptResponses @("") | Out-Null
-    $createdWorkspaceFile = Join-Path $createDirectory "workspace.code-workspace"
+    $createdWorkspaceFile = Join-Path $createDirectory "$((Split-Path -Leaf $createDirectory)).code-workspace"
     Assert-True -Condition (Test-Path -LiteralPath $createdWorkspaceFile -PathType Leaf) -Message "Default workspace file was not created."
     $createdData = Read-WorkspaceConfiguration -WorkspaceFile (Get-Item -LiteralPath $createdWorkspaceFile)
     Assert-Equal -Expected $createDirectory -Actual $createdData.Root -Message "Created Root path."
@@ -218,7 +220,7 @@ try {
     $declineDirectory = Join-Path $testRoot "creation declined"
     New-Item -ItemType Directory -Path $declineDirectory | Out-Null
     $declineOutput = Invoke-TestLauncher -WorkingDirectory $declineDirectory -PromptResponses @("n")
-    Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $declineDirectory "workspace.code-workspace"))) -Message "Declining creation still created a file."
+    Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $declineDirectory "$((Split-Path -Leaf $declineDirectory)).code-workspace"))) -Message "Declining creation still created a file."
     Assert-True -Condition (($declineOutput | Out-String) -like "*<current directory defaults>*") -Message "Default workspace display was missing."
 
     $multipleDirectory = Join-Path $testRoot "multiple"

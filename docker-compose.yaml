@@ -1,7 +1,7 @@
 services:
   copilot:
     build: ./build/copilot
-    container_name: copilot
+    # Launchers provide a unique project-specific name for `docker compose run` containers.
     working_dir: /workspace
     #stdin_open: true
     #tty: true
@@ -11,7 +11,7 @@ services:
       - COPILOT_CONFIG_DIR=${COPILOT_CONFIG_DIR:-/workspace/.copilot}
       - COPILOT_AUTO_ALLOW_ALL=${COPILOT_AUTO_ALLOW_ALL:-0}
       - COPILOT_STACK_CONFIG_DIR=/copilot-stack-config
-      - COPILOT_AUTO_TRUST_WORKSPACE=${COPILOT_AUTO_TRUST_WORKSPACE:-0}
+      - COPILOT_AUTO_TRUST_WORKSPACE=${COPILOT_AUTO_TRUST_WORKSPACE:-1}
     volumes:
       - ./config/copilot:/copilot-stack-config
     restart: no

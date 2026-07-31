@@ -123,6 +123,8 @@ assert_equal \
     "$ROOT_WITH_SPACES:/workspace" \
     "$(argument_after -v)" \
     "Root mount with spaces."
+[[ "$(argument_after --name)" =~ ^copilot-nested-[0-9]{8}-[0-9]{6}$ ]] ||
+    fail "Unexpected workspace container name: $(argument_after --name)"
 
 environment_arguments=()
 for ((index = 0; index < ${#DOCKER_ARGUMENTS[@]}; index++)); do
@@ -179,7 +181,7 @@ assert_equal "-f" "${DOCKER_ARGUMENTS[0]}" "Modern docker compose invocation."
 CREATE_DIRECTORY="$TEST_ROOT/create"
 mkdir -p -- "$CREATE_DIRECTORY"
 run_launcher "$CREATE_DIRECTORY" $'\n' >/dev/null
-[[ -f "$CREATE_DIRECTORY/workspace.code-workspace" ]] ||
+[[ -f "$CREATE_DIRECTORY/$(basename -- "$CREATE_DIRECTORY").code-workspace" ]] ||
     fail "Default workspace file was not created."
 load_arguments
 assert_equal "/workspace" "$(argument_after --workdir)" "Default workspace cwd."
@@ -188,7 +190,7 @@ assert_equal "--banner" "${DOCKER_ARGUMENTS[-1]}" "Default Copilot argument."
 DECLINE_DIRECTORY="$TEST_ROOT/decline"
 mkdir -p -- "$DECLINE_DIRECTORY"
 decline_output=$(run_launcher "$DECLINE_DIRECTORY" $'n\n')
-[[ ! -e "$DECLINE_DIRECTORY/workspace.code-workspace" ]] ||
+[[ ! -e "$DECLINE_DIRECTORY/$(basename -- "$DECLINE_DIRECTORY").code-workspace" ]] ||
     fail "Declining workspace creation still created a file."
 assert_contains "$decline_output" "<current directory defaults>" "Default workspace display."
 

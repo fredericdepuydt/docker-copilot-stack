@@ -510,7 +510,7 @@ reset_auth() {
 }
 
 configure_workspace_trust() {
-    local trust_setting=${COPILOT_AUTO_TRUST_WORKSPACE:-0}
+    local trust_setting=${COPILOT_AUTO_TRUST_WORKSPACE:-1}
     local config_file="$COPILOT_CONFIG_DIR/config.json"
 
     case "$trust_setting" in
@@ -531,9 +531,59 @@ const configFile = process.env.COPILOT_TRUST_CONFIG_FILE;
 const trustedDirectory = process.env.COPILOT_TRUST_DIRECTORY;
 let config = {};
 
+function parseJsonc(content) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    const next = content[index + 1];
+    if (lineComment) {
+      if (character === "\n" || character === "\r") {
+        lineComment = false;
+        output += character;
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      } else if (character === "\n" || character === "\r") {
+        output += character;
+      }
+      continue;
+    }
+    if (inString) {
+      output += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') {
+      inString = true;
+      output += character;
+    } else if (character === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+    } else if (character === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+    } else {
+      output += character;
+    }
+  }
+
+  return JSON.parse(output.replace(/,\s*([}\]])/g, "$1"));
+}
+
 if (fs.existsSync(configFile)) {
   try {
-    config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    config = parseJsonc(fs.readFileSync(configFile, "utf8"));
   } catch {
     console.error("copilot-stack: workspace Copilot configuration is invalid JSON; it was not modified.");
     process.exit(1);

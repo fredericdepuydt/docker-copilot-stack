@@ -280,7 +280,8 @@ function New-DefaultWorkspaceFile {
         [string]$CurrentDirectory
     )
 
-    $workspaceFile = Join-Path $CurrentDirectory "workspace.code-workspace"
+    $directoryName = Split-Path -Leaf $CurrentDirectory
+    $workspaceFile = Join-Path $CurrentDirectory "$directoryName.code-workspace"
     $content = @'
 {
   "folders": [
@@ -305,6 +306,20 @@ function New-DefaultWorkspaceFile {
     } catch {
         throw "Failed to create VS Code workspace file '$workspaceFile': $($_.Exception.Message)"
     }
+}
+
+function ConvertTo-ProjectName {
+    param([Parameter(Mandatory)][string]$ProjectName)
+
+    $sanitized = ($ProjectName.ToLowerInvariant() -replace "[^a-z0-9]+", "-").Trim("-")
+    if ([string]::IsNullOrWhiteSpace($sanitized)) { return "project" }
+    return $sanitized
+}
+
+function New-ContainerName {
+    param([Parameter(Mandatory)][string]$ProjectName)
+
+    return "copilot-{0}-{1}" -f (ConvertTo-ProjectName $ProjectName), (Get-Date).ToUniversalTime().ToString("yyyyMMdd-HHmmss")
 }
 
 function Invoke-Compose {
@@ -425,6 +440,11 @@ function Invoke-CopilotLauncher {
         "/workspace/$containerRelativePath"
     }
     $containerConfig = "$containerWorkspace/.copilot"
+    $projectName = Split-Path -Leaf $workspace
+    if ($null -ne $workspaceFile) {
+        $projectName = [System.IO.Path]::GetFileNameWithoutExtension($workspaceFile.Name)
+    }
+    $containerName = New-ContainerName -ProjectName $projectName
 
     Write-Host ("VS Code workspace: {0}" -f $workspaceDisplay)
     Write-Host ("Host root:          {0}" -f $root)
@@ -432,6 +452,7 @@ function Invoke-CopilotLauncher {
     Write-Host ("Docker mount:       {0} -> /workspace" -f $root)
     Write-Host ("Container cwd:      {0}" -f $containerWorkspace)
     Write-Host ("Copilot config:     {0}" -f $containerConfig)
+    Write-Host ("Container name:     {0}" -f $containerName)
     Write-Host "Copilot mode:       YOLO, all paths allowed"
 
     $mandatoryCopilotArgs = @()
@@ -444,6 +465,7 @@ function Invoke-CopilotLauncher {
     $dockerArgs = @(
         "-f", $composeFile,
         "run", "--rm",
+        "--name", $containerName,
         "-v", "${root}:/workspace",
         "--workdir", $containerWorkspace,
         "-e", "COPILOT_CONFIG_DIR=$containerConfig",

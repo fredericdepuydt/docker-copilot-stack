@@ -133,7 +133,7 @@ No VS Code workspace file was found.
 Create one with Root and Workspace both pointing to "."? [Y/n]
 ```
 
-Accepting creates `workspace.code-workspace` with both named folders pointing to `"."`. Declining uses the current directory as both Root and Workspace for that run without creating a file. Root and Workspace may resolve to the same directory.
+Accepting creates `<foldername>.code-workspace` with both named folders pointing to `"."`. Declining uses the current directory as both Root and Workspace for that run without creating a file. Root and Workspace may resolve to the same directory.
 
 Before Docker starts, the resolved mapping is displayed:
 
@@ -145,6 +145,7 @@ Docker mount:       <resolved-root> -> /workspace
 Container cwd:      <container-workspace>
 Copilot config:     <container-workspace>/.copilot
 Container user:     <host-uid>:<host-gid>
+Container name:     copilot-<projectname>-<UTC timestamp>
 Copilot mode:       YOLO, all paths allowed
 ```
 
@@ -282,12 +283,11 @@ stack configuration.
 
 #### Automatic workspace trust
 
-Automatic trust is disabled by default. Set
-`COPILOT_AUTO_TRUST_WORKSPACE=1` before starting the launcher or Compose to
-add only the selected container working directory to that workspace's
-`.copilot/config.json`. Existing JSON properties are preserved and updates are
-atomic. Invalid JSON is reported and left untouched. Set
-`COPILOT_AUTO_TRUST_WORKSPACE=0` (the default) to disable it.
+Automatic trust is enabled by default. The selected container working
+directory is added to that workspace's `.copilot/config.json` before startup.
+Existing JSON properties are preserved and updates are atomic. Invalid JSON is
+reported and left untouched. Set `COPILOT_AUTO_TRUST_WORKSPACE=0` before
+starting the launcher or Compose to disable it.
 
 #### Security limitations
 
