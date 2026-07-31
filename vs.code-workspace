@@ -1,8 +1,15 @@
 {
-	"folders": [
-		{
-			"path": "."
-		}
-	],
-	"settings": {}
+  "folders": [
+    {
+      "name": "Root",
+      "path": "."
+    },
+    {
+      "name": "Workspace",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "terminal.integrated.cwd": "${workspaceFolder:Workspace}"
+  }
 }

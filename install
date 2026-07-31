@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+LAUNCHER="$SCRIPT_DIR/copilot"
+START_MARKER="# >>> docker copilot launcher >>>"
+END_MARKER="# <<< docker copilot launcher <<<"
+
+if [[ ! -f "$LAUNCHER" ]]; then
+    echo "Expected launcher not found: $LAUNCHER" >&2
+    exit 1
+fi
+
+LAUNCHER=$(realpath -e -- "$LAUNCHER")
+chmod +x -- "$LAUNCHER"
+
+case ${SHELL:-} in
+    */fish)
+        PROFILE_KIND=fish
+        DEFAULT_PROFILE="$HOME/.config/fish/config.fish"
+        ;;
+    */bash)
+        PROFILE_KIND=posix
+        DEFAULT_PROFILE="$HOME/.bashrc"
+        ;;
+    */zsh)
+        PROFILE_KIND=posix
+        DEFAULT_PROFILE="$HOME/.zshrc"
+        ;;
+    *)
+        PROFILE_KIND=posix
+        DEFAULT_PROFILE="$HOME/.profile"
+        ;;
+esac
+PROFILE=${COPILOT_PROFILE:-"$DEFAULT_PROFILE"}
+
+profile_has_start=0
+profile_has_end=0
+if [[ -f "$PROFILE" ]]; then
+    if grep -Fqx "$START_MARKER" "$PROFILE"; then
+        profile_has_start=1
+    fi
+    if grep -Fqx "$END_MARKER" "$PROFILE"; then
+        profile_has_end=1
+    fi
+fi
+
+if [[ $profile_has_start -ne $profile_has_end ]]; then
+    echo "Incomplete Copilot launcher block in $PROFILE; remove it and rerun install." >&2
+    exit 1
+fi
+
+mkdir -p -- "$(dirname -- "$PROFILE")"
+touch -- "$PROFILE"
+
+escaped_launcher=${LAUNCHER//\'/\'\"\'\"\'}
+if [[ "$PROFILE_KIND" == fish ]]; then
+    function_block=$(printf '%s\n%s\n%s\n%s\n%s' \
+        "$START_MARKER" \
+        "function copilot" \
+        "    '$escaped_launcher' \$argv" \
+        "end" \
+        "$END_MARKER")
+else
+    function_block=$(printf '%s\n%s\n%s\n%s\n%s' \
+        "$START_MARKER" \
+        "copilot() {" \
+        "    '$escaped_launcher' \"\$@\"" \
+        "}" \
+        "$END_MARKER")
+fi
+
+temporary_profile=$(mktemp "${PROFILE}.copilot.XXXXXX")
+trap 'rm -f -- "$temporary_profile"' EXIT
+
+if [[ $profile_has_start -eq 1 ]]; then
+    awk -v start="$START_MARKER" -v end="$END_MARKER" '
+        $0 == start { skip = 1; next }
+        $0 == end { skip = 0; next }
+        !skip { print }
+    ' "$PROFILE" >"$temporary_profile"
+else
+    cp -- "$PROFILE" "$temporary_profile"
+fi
+
+if [[ -s "$temporary_profile" ]] && [[ $(tail -c 1 "$temporary_profile" | wc -l) -eq 0 ]]; then
+    printf '\n' >>"$temporary_profile"
+fi
+printf '%s\n' "$function_block" >>"$temporary_profile"
+cat "$temporary_profile" >"$PROFILE"
+rm -f -- "$temporary_profile"
+trap - EXIT
+
+legacy_target="${COPILOT_INSTALL_DIR:-"$HOME/.local/bin"}/copilot"
+if [[ -L "$legacy_target" ]]; then
+    legacy_link=$(readlink -- "$legacy_target")
+    if [[ "$legacy_link" == /* ]]; then
+        legacy_source=$(realpath -m -- "$legacy_link")
+    else
+        legacy_source=$(realpath -m -- "$(dirname -- "$legacy_target")/$legacy_link")
+    fi
+    if [[ "$legacy_source" == "$LAUNCHER" ]]; then
+        rm -- "$legacy_target"
+    fi
+fi
+
+echo "Added copilot function to $PROFILE"
+echo "Run 'source \"$PROFILE\"' (or restart your shell), then use: copilot"

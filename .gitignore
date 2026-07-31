@@ -1,4 +1,6 @@
 .copilot/
-config/copilot/
+config/copilot/*
+!config/copilot/.gitkeep
+!config/copilot/auth.env.example
 build/copilot/certs/*.crt
 !build/copilot/certs/.gitkeep

@@ -1,0 +1,471 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+LAUNCHER_SOURCE=${BASH_SOURCE[0]}
+while [[ -L "$LAUNCHER_SOURCE" ]]; do
+    SOURCE_DIRECTORY=$(cd -- "$(dirname -- "$LAUNCHER_SOURCE")" && pwd -P)
+    LINK_TARGET=$(readlink -- "$LAUNCHER_SOURCE")
+    if [[ "$LINK_TARGET" == /* ]]; then
+        LAUNCHER_SOURCE=$LINK_TARGET
+    else
+        LAUNCHER_SOURCE="$SOURCE_DIRECTORY/$LINK_TARGET"
+    fi
+done
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "$LAUNCHER_SOURCE")" && pwd -P)
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yaml"
+
+fail() {
+    echo "copilot: $*" >&2
+    exit 1
+}
+
+select_compose_command() {
+    if command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE_COMMAND=(docker-compose)
+    elif command -v docker >/dev/null 2>&1; then
+        COMPOSE_COMMAND=(docker compose)
+    else
+        fail "Docker Compose startup failed: neither 'docker-compose' nor 'docker' was found in PATH."
+    fi
+}
+
+sanitize_project_name() {
+    local project_name=$1
+    project_name=${project_name,,}
+    project_name=$(printf '%s' "$project_name" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+    [[ -n "$project_name" ]] || project_name=project
+    printf '%s' "$project_name"
+}
+
+container_name_for() {
+    local project_name=$1
+    printf 'copilot-%s-%s' "$(sanitize_project_name "$project_name")" "$(date -u +%Y%m%d-%H%M%S)"
+}
+
+run_stack_management_command() {
+    local command=$1
+    local user_id
+    local group_id
+    local exit_code
+    local container_name
+
+    container_name=$(container_name_for "$(basename -- "$PWD")")
+
+    user_id=$(id -u)
+    group_id=$(id -g)
+    select_compose_command
+
+    if "${COMPOSE_COMMAND[@]}" \
+        -f "$COMPOSE_FILE" \
+        run --rm \
+        --name "$container_name" \
+        -e "PUID=$user_id" \
+        -e "PGID=$group_id" \
+        copilot "$command"; then
+        return 0
+    fi
+
+    exit_code=$?
+    echo "Docker Compose or Copilot exited with code $exit_code." >&2
+    return "$exit_code"
+}
+
+parse_workspace_file() {
+    local workspace_file=$1
+    local parse_output
+    local parse_error
+    local error_message
+
+    parse_output=$(mktemp)
+    parse_error=$(mktemp)
+
+    if ! perl -MJSON::PP - "$workspace_file" >"$parse_output" 2>"$parse_error" <<'PERL'
+use strict;
+use warnings;
+use JSON::PP qw(decode_json);
+
+sub abort_parse {
+    print STDERR shift;
+    exit 1;
+}
+
+my $source = shift @ARGV;
+open my $handle, '<:encoding(UTF-8)', $source
+    or abort_parse("Unable to read workspace file '$source': $!");
+local $/;
+my $content = <$handle>;
+close $handle;
+$content =~ s/^\x{FEFF}//;
+
+my $without_comments = '';
+my ($in_string, $escaped, $in_line_comment, $in_block_comment) = (0, 0, 0, 0);
+
+for (my $index = 0; $index < length($content); $index++) {
+    my $character = substr($content, $index, 1);
+    my $next_character =
+        $index + 1 < length($content) ? substr($content, $index + 1, 1) : '';
+
+    if ($in_line_comment) {
+        if ($character eq "\r" || $character eq "\n") {
+            $in_line_comment = 0;
+            $without_comments .= $character;
+        }
+        next;
+    }
+
+    if ($in_block_comment) {
+        if ($character eq '*' && $next_character eq '/') {
+            $in_block_comment = 0;
+            $index++;
+        } elsif ($character eq "\r" || $character eq "\n") {
+            $without_comments .= $character;
+        }
+        next;
+    }
+
+    if ($in_string) {
+        $without_comments .= $character;
+        if ($escaped) {
+            $escaped = 0;
+        } elsif ($character eq '\\') {
+            $escaped = 1;
+        } elsif ($character eq '"') {
+            $in_string = 0;
+        }
+        next;
+    }
+
+    if ($character eq '"') {
+        $in_string = 1;
+        $without_comments .= $character;
+    } elsif ($character eq '/' && $next_character eq '/') {
+        $in_line_comment = 1;
+        $index++;
+    } elsif ($character eq '/' && $next_character eq '*') {
+        $in_block_comment = 1;
+        $index++;
+    } else {
+        $without_comments .= $character;
+    }
+}
+
+abort_parse("Invalid workspace JSON in '$source': unterminated block comment.")
+    if $in_block_comment;
+
+my $without_trailing_commas = '';
+($in_string, $escaped) = (0, 0);
+
+for (my $index = 0; $index < length($without_comments); $index++) {
+    my $character = substr($without_comments, $index, 1);
+
+    if ($in_string) {
+        $without_trailing_commas .= $character;
+        if ($escaped) {
+            $escaped = 0;
+        } elsif ($character eq '\\') {
+            $escaped = 1;
+        } elsif ($character eq '"') {
+            $in_string = 0;
+        }
+        next;
+    }
+
+    if ($character eq '"') {
+        $in_string = 1;
+        $without_trailing_commas .= $character;
+        next;
+    }
+
+    if ($character eq ',') {
+        my $look_ahead = $index + 1;
+        $look_ahead++
+            while $look_ahead < length($without_comments)
+                && substr($without_comments, $look_ahead, 1) =~ /\s/;
+        if ($look_ahead < length($without_comments)
+            && substr($without_comments, $look_ahead, 1) =~ /[}\]]/) {
+            next;
+        }
+    }
+
+    $without_trailing_commas .= $character;
+}
+
+my $workspace_data;
+eval {
+    $workspace_data = decode_json($without_trailing_commas);
+    1;
+} or do {
+    my $error = $@ || 'unknown JSON parsing error';
+    $error =~ s/\s+at\s+\S+\s+line\s+\d+.*$//s;
+    abort_parse("Invalid or unreadable workspace JSON in '$source': $error");
+};
+
+my $folders =
+    ref($workspace_data) eq 'HASH' && ref($workspace_data->{folders}) eq 'ARRAY'
+        ? $workspace_data->{folders}
+        : [];
+
+for my $name ('Root', 'Workspace') {
+    my @matches = grep {
+        ref($_) eq 'HASH'
+            && defined($_->{name})
+            && lc("$_->{name}") eq lc($name)
+    } @$folders;
+
+    abort_parse("Workspace file '$source' is missing a named '$name' folder entry.")
+        if @matches == 0;
+    abort_parse("Workspace file '$source' contains multiple named '$name' folder entries.")
+        if @matches > 1;
+
+    my $path = $matches[0]->{path};
+    abort_parse("The '$name' folder entry in '$source' is missing its path.")
+        if !defined($path) || ref($path) || "$path" !~ /\S/;
+
+    print "$path", "\0";
+}
+PERL
+    then
+        error_message=$(<"$parse_error")
+        rm -f -- "$parse_output" "$parse_error"
+        fail "$error_message"
+    fi
+
+    mapfile -d '' -t WORKSPACE_FOLDER_PATHS <"$parse_output"
+    rm -f -- "$parse_output" "$parse_error"
+
+    [[ ${#WORKSPACE_FOLDER_PATHS[@]} -eq 2 ]] ||
+        fail "Workspace parser returned an unexpected result for '$workspace_file'."
+}
+
+resolve_workspace_directory() {
+    local workspace_file_directory=$1
+    local folder_path=$2
+    local folder_name=$3
+    local candidate
+    local resolved
+
+    if [[ "$folder_path" == /* ]]; then
+        candidate=$folder_path
+    else
+        candidate="$workspace_file_directory/$folder_path"
+    fi
+
+    if [[ ! -d "$candidate" ]]; then
+        fail "The '$folder_name' directory does not exist: $(realpath -m -- "$candidate")"
+    fi
+
+    if ! resolved=$(realpath -e -- "$candidate"); then
+        fail "The '$folder_name' directory cannot be read: $candidate"
+    fi
+
+    printf '%s' "$resolved"
+}
+
+select_workspace_file() {
+    local index
+    local selection
+
+    if [[ ${#WORKSPACE_FILES[@]} -eq 1 ]]; then
+        SELECTED_WORKSPACE_FILE=${WORKSPACE_FILES[0]}
+        return
+    fi
+
+    echo "Multiple VS Code workspace files were found:"
+    for ((index = 0; index < ${#WORKSPACE_FILES[@]}; index++)); do
+        printf '  %d. %s\n' "$((index + 1))" "$(basename -- "${WORKSPACE_FILES[$index]}")"
+    done
+
+    while true; do
+        read -r -p "Select a workspace file [1-${#WORKSPACE_FILES[@]}]: " selection ||
+            fail "Unable to read workspace selection."
+        if [[ "$selection" =~ ^[0-9]+$ ]] &&
+            ((selection >= 1 && selection <= ${#WORKSPACE_FILES[@]})); then
+            SELECTED_WORKSPACE_FILE=${WORKSPACE_FILES[$((selection - 1))]}
+            return
+        fi
+        echo "Please enter a number between 1 and ${#WORKSPACE_FILES[@]}."
+    done
+}
+
+confirm_workspace_file_creation() {
+    local response
+
+    echo "No VS Code workspace file was found."
+    while true; do
+        read -r -p 'Create one with Root and Workspace both pointing to "."? [Y/n] ' response ||
+            fail "Unable to read workspace creation response."
+        case ${response,,} in
+            "" | y | yes)
+                return 0
+                ;;
+            n | no)
+                return 1
+                ;;
+            *)
+                echo "Please answer Y or N."
+                ;;
+        esac
+    done
+}
+
+create_default_workspace_file() {
+    local workspace_file=$1
+
+    if ! cat >"$workspace_file" <<'EOF'
+{
+  "folders": [
+    {
+      "name": "Root",
+      "path": "."
+    },
+    {
+      "name": "Workspace",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "terminal.integrated.cwd": "${workspaceFolder:Workspace}"
+  }
+}
+EOF
+    then
+        fail "Failed to create VS Code workspace file '$workspace_file'."
+    fi
+}
+
+[[ -f "$COMPOSE_FILE" ]] || fail "Docker Compose file not found: $COMPOSE_FILE"
+command -v perl >/dev/null 2>&1 ||
+    fail "Perl with the core JSON::PP module is required."
+perl -MJSON::PP -e 1 >/dev/null 2>&1 ||
+    fail "Perl with the core JSON::PP module is required."
+command -v realpath >/dev/null 2>&1 || fail "'realpath' is required."
+
+case ${1:-} in
+    --stack-configure-auth)
+        [[ $# -eq 1 ]] || fail "--stack-configure-auth does not accept additional arguments."
+        run_stack_management_command configure-auth
+        exit $?
+        ;;
+    --stack-show-auth)
+        [[ $# -eq 1 ]] || fail "--stack-show-auth does not accept additional arguments."
+        run_stack_management_command show-auth
+        exit $?
+        ;;
+    --stack-reset-auth)
+        [[ $# -eq 1 ]] || fail "--stack-reset-auth does not accept additional arguments."
+        run_stack_management_command reset-auth
+        exit $?
+        ;;
+esac
+
+if [[ $# -eq 0 ]]; then
+    set -- --banner
+fi
+
+if ! CURRENT_DIRECTORY=$(realpath -e -- "$PWD"); then
+    fail "Copilot must be launched from a readable filesystem directory."
+fi
+
+shopt -s nullglob
+WORKSPACE_FILES=()
+for candidate in "$CURRENT_DIRECTORY"/*.code-workspace; do
+    [[ -f "$candidate" ]] && WORKSPACE_FILES+=("$candidate")
+done
+shopt -u nullglob
+
+SELECTED_WORKSPACE_FILE=
+WORKSPACE_DISPLAY="<current directory defaults>"
+
+if [[ ${#WORKSPACE_FILES[@]} -gt 0 ]]; then
+    select_workspace_file
+elif confirm_workspace_file_creation; then
+    SELECTED_WORKSPACE_FILE="$CURRENT_DIRECTORY/$(basename -- "$CURRENT_DIRECTORY").code-workspace"
+    create_default_workspace_file "$SELECTED_WORKSPACE_FILE"
+fi
+
+if [[ -n "$SELECTED_WORKSPACE_FILE" ]]; then
+    parse_workspace_file "$SELECTED_WORKSPACE_FILE"
+    ROOT=$(resolve_workspace_directory \
+        "$(dirname -- "$SELECTED_WORKSPACE_FILE")" \
+        "${WORKSPACE_FOLDER_PATHS[0]}" \
+        "Root")
+    WORKSPACE=$(resolve_workspace_directory \
+        "$(dirname -- "$SELECTED_WORKSPACE_FILE")" \
+        "${WORKSPACE_FOLDER_PATHS[1]}" \
+        "Workspace")
+    WORKSPACE_DISPLAY=$SELECTED_WORKSPACE_FILE
+else
+    ROOT=$CURRENT_DIRECTORY
+    WORKSPACE=$CURRENT_DIRECTORY
+fi
+
+if [[ "$WORKSPACE" == "$ROOT" ]]; then
+    RELATIVE_WORKSPACE=
+elif [[ "$ROOT" == "/" && "$WORKSPACE" == /* ]]; then
+    RELATIVE_WORKSPACE=${WORKSPACE#/}
+elif [[ "$WORKSPACE" == "$ROOT/"* ]]; then
+    RELATIVE_WORKSPACE=${WORKSPACE#"$ROOT/"}
+else
+    fail "Workspace '$WORKSPACE' is outside Root '$ROOT'. Workspace must be equal to or contained inside Root."
+fi
+
+if [[ -z "$RELATIVE_WORKSPACE" ]]; then
+    CONTAINER_WORKSPACE=/workspace
+else
+    CONTAINER_WORKSPACE="/workspace/$RELATIVE_WORKSPACE"
+fi
+CONTAINER_CONFIG="$CONTAINER_WORKSPACE/.copilot"
+PROJECT_NAME=$(basename -- "$WORKSPACE")
+if [[ -n "$SELECTED_WORKSPACE_FILE" ]]; then
+    WORKSPACE_PROJECT_NAME=$(basename -- "$SELECTED_WORKSPACE_FILE" .code-workspace)
+    [[ -n "$WORKSPACE_PROJECT_NAME" ]] && PROJECT_NAME=$WORKSPACE_PROJECT_NAME
+fi
+CONTAINER_NAME=$(container_name_for "$PROJECT_NAME")
+USER_ID=$(id -u)
+GROUP_ID=$(id -g)
+
+printf 'VS Code workspace: %s\n' "$WORKSPACE_DISPLAY"
+printf 'Host root:          %s\n' "$ROOT"
+printf 'Host workspace:     %s\n' "$WORKSPACE"
+printf 'Docker mount:       %s -> /workspace\n' "$ROOT"
+printf 'Container cwd:      %s\n' "$CONTAINER_WORKSPACE"
+printf 'Copilot config:     %s\n' "$CONTAINER_CONFIG"
+printf 'Container user:     %s:%s\n' "$USER_ID" "$GROUP_ID"
+printf 'Container name:     %s\n' "$CONTAINER_NAME"
+echo "Copilot mode:       YOLO, all paths allowed"
+
+select_compose_command
+
+MANDATORY_COPILOT_ARGUMENTS=()
+has_allow_all_paths=0
+has_yolo=0
+for argument in "$@"; do
+    [[ "$argument" == --allow-all-paths ]] && has_allow_all_paths=1
+    [[ "$argument" == --yolo ]] && has_yolo=1
+done
+[[ $has_allow_all_paths -eq 1 ]] || MANDATORY_COPILOT_ARGUMENTS+=(--allow-all-paths)
+[[ $has_yolo -eq 1 ]] || MANDATORY_COPILOT_ARGUMENTS+=(--yolo)
+
+DOCKER_ARGUMENTS=(
+    -f "$COMPOSE_FILE"
+    run --rm
+    --name "$CONTAINER_NAME"
+    -v "$ROOT:/workspace"
+    --workdir "$CONTAINER_WORKSPACE"
+    -e "COPILOT_CONFIG_DIR=$CONTAINER_CONFIG"
+    -e "PUID=$USER_ID"
+    -e "PGID=$GROUP_ID"
+    copilot
+    copilot
+    "${MANDATORY_COPILOT_ARGUMENTS[@]}"
+    "$@"
+)
+
+if "${COMPOSE_COMMAND[@]}" "${DOCKER_ARGUMENTS[@]}"; then
+    exit 0
+else
+    exit_code=$?
+    echo "Docker Compose or Copilot exited with code $exit_code." >&2
+    exit "$exit_code"
+fi
