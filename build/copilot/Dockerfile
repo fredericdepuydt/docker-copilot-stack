@@ -36,9 +36,10 @@ RUN npm install -g @github/copilot@${COPILOT_VERSION}
 # Set the working directory for the container.
 WORKDIR /workspace
 
-# Copy the entrypoint script into the container and make it executable.
-COPY entrypoint.sh /usr/local/bin/
-RUN chmod 0755 /usr/local/bin/entrypoint.sh
+# Normalize line endings and guarantee the executable entrypoint path.
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh \
+  && chmod 0755 /usr/local/bin/entrypoint.sh
 
 # Label for image cleanup
 LABEL project="copilot"

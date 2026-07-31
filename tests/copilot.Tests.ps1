@@ -182,6 +182,25 @@ try {
     Assert-Equal -Expected "test-model" -Actual $global:CopilotTestDockerArgs[$allowIndex + 4] -Message "Third user argument order."
     Assert-True -Condition ($global:CopilotTestDockerArgs -notcontains "-it") -Message "Unsupported Compose -it flag was forwarded."
 
+    Invoke-TestLauncher -WorkingDirectory $nestedWorkspace -Arguments @("chat", "--allow-all-paths", "--yolo") | Out-Null
+    Assert-Equal `
+        -Expected 1 `
+        -Actual @($global:CopilotTestDockerArgs | Where-Object { $_ -eq "--allow-all-paths" }).Count `
+        -Message "--allow-all-paths was duplicated."
+    Assert-Equal `
+        -Expected 1 `
+        -Actual @($global:CopilotTestDockerArgs | Where-Object { $_ -eq "--yolo" }).Count `
+        -Message "--yolo was duplicated."
+
+    Invoke-TestLauncher -WorkingDirectory $nestedWorkspace -Arguments @("--stack-show-auth") | Out-Null
+    Assert-Equal -Expected "show-auth" -Actual $global:CopilotTestDockerArgs[-1] -Message "Stack management command."
+    Assert-Equal -Expected "copilot" -Actual $global:CopilotTestDockerArgs[-2] -Message "Stack management service."
+
+    $composeContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) "docker-compose.yaml") -Raw
+    Assert-True `
+        -Condition ($composeContent -match "(?s)config/copilot:/copilot-stack-config") `
+        -Message "Stack configuration mount was missing."
+
     $windowsRelative = Get-RelativeWorkspacePath `
         -Root "C:\Source\Codebase" `
         -Workspace "c:\source\codebase\Applications\MyApplication"

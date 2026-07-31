@@ -20,6 +20,40 @@ fail() {
     exit 1
 }
 
+select_compose_command() {
+    if command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE_COMMAND=(docker-compose)
+    elif command -v docker >/dev/null 2>&1; then
+        COMPOSE_COMMAND=(docker compose)
+    else
+        fail "Docker Compose startup failed: neither 'docker-compose' nor 'docker' was found in PATH."
+    fi
+}
+
+run_stack_management_command() {
+    local command=$1
+    local user_id
+    local group_id
+    local exit_code
+
+    user_id=$(id -u)
+    group_id=$(id -g)
+    select_compose_command
+
+    if "${COMPOSE_COMMAND[@]}" \
+        -f "$COMPOSE_FILE" \
+        run --rm \
+        -e "PUID=$user_id" \
+        -e "PGID=$group_id" \
+        copilot "$command"; then
+        return 0
+    fi
+
+    exit_code=$?
+    echo "Docker Compose or Copilot exited with code $exit_code." >&2
+    return "$exit_code"
+}
+
 parse_workspace_file() {
     local workspace_file=$1
     local parse_output
@@ -290,6 +324,24 @@ perl -MJSON::PP -e 1 >/dev/null 2>&1 ||
     fail "Perl with the core JSON::PP module is required."
 command -v realpath >/dev/null 2>&1 || fail "'realpath' is required."
 
+case ${1:-} in
+    --stack-configure-auth)
+        [[ $# -eq 1 ]] || fail "--stack-configure-auth does not accept additional arguments."
+        run_stack_management_command configure-auth
+        exit $?
+        ;;
+    --stack-show-auth)
+        [[ $# -eq 1 ]] || fail "--stack-show-auth does not accept additional arguments."
+        run_stack_management_command show-auth
+        exit $?
+        ;;
+    --stack-reset-auth)
+        [[ $# -eq 1 ]] || fail "--stack-reset-auth does not accept additional arguments."
+        run_stack_management_command reset-auth
+        exit $?
+        ;;
+esac
+
 if [[ $# -eq 0 ]]; then
     set -- --banner
 fi
@@ -359,13 +411,17 @@ printf 'Copilot config:     %s\n' "$CONTAINER_CONFIG"
 printf 'Container user:     %s:%s\n' "$USER_ID" "$GROUP_ID"
 echo "Copilot mode:       YOLO, all paths allowed"
 
-if command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE_COMMAND=(docker-compose)
-elif command -v docker >/dev/null 2>&1; then
-    COMPOSE_COMMAND=(docker compose)
-else
-    fail "Docker Compose startup failed: neither 'docker-compose' nor 'docker' was found in PATH."
-fi
+select_compose_command
+
+MANDATORY_COPILOT_ARGUMENTS=()
+has_allow_all_paths=0
+has_yolo=0
+for argument in "$@"; do
+    [[ "$argument" == --allow-all-paths ]] && has_allow_all_paths=1
+    [[ "$argument" == --yolo ]] && has_yolo=1
+done
+[[ $has_allow_all_paths -eq 1 ]] || MANDATORY_COPILOT_ARGUMENTS+=(--allow-all-paths)
+[[ $has_yolo -eq 1 ]] || MANDATORY_COPILOT_ARGUMENTS+=(--yolo)
 
 DOCKER_ARGUMENTS=(
     -f "$COMPOSE_FILE"
@@ -377,8 +433,7 @@ DOCKER_ARGUMENTS=(
     -e "PGID=$GROUP_ID"
     copilot
     copilot
-    --allow-all-paths
-    --yolo
+    "${MANDATORY_COPILOT_ARGUMENTS[@]}"
     "$@"
 )
 

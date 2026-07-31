@@ -54,6 +54,7 @@ copilot --help
 ```
 
 The effective CLI invocation always includes `--allow-all-paths --yolo`.
+The launchers add either flag only when it was not already supplied.
 
 For direct Compose usage:
 
@@ -190,6 +191,113 @@ PUID=$(id -u) PGID=$(id -g) docker-compose run --rm copilot copilot --help
 ```bash
 docker-compose build --build-arg COPILOT_VERSION=1.0.0
 ```
+
+### Authentication and BYOK
+
+Authentication is persistent but deliberately separate from workspace state:
+
+| State | Host location | Container location |
+| --- | --- | --- |
+| Workspace sessions, instructions, trusted folders, and Copilot settings | `<selected workspace>/.copilot` | `COPILOT_CONFIG_DIR` |
+| Stack authentication and BYOK settings | `config/copilot/auth.env` | `/copilot-stack-config/auth.env` |
+
+On the first normal container start, when no `auth.env` exists, the entrypoint
+opens an interactive configuration wizard. Non-interactive starts fail clearly
+instead of waiting for input. Configure explicitly with either launcher:
+
+```bash
+copilot --stack-configure-auth
+copilot --stack-show-auth
+copilot --stack-reset-auth
+```
+
+```powershell
+copilot --stack-configure-auth
+copilot --stack-show-auth
+copilot --stack-reset-auth
+```
+
+The equivalent direct Compose commands are:
+
+```bash
+docker compose run --rm copilot configure-auth
+docker compose run --rm copilot show-auth
+docker compose run --rm copilot reset-auth
+docker compose run --rm copilot reset-auth --yes
+```
+
+`reset-auth` deletes only `config/copilot/auth.env`; it never deletes a
+workspace `.copilot` directory. The launcher-specific arguments are consumed
+by the launcher and are never passed to Copilot CLI.
+
+The wizard supports three explicit modes:
+
+| Mode | Inference | GitHub features | Offline |
+| --- | --- | --- | --- |
+| `github` | GitHub-hosted Copilot models | Enabled | Not allowed |
+| `byok` | External provider | Disabled unless the CLI can work without GitHub | Optional |
+| `hybrid` | External provider | Enabled with a GitHub token | Not allowed |
+
+For `github` and `hybrid`, provide a user-owned fine-grained PAT with the
+**Copilot Requests** account permission, an OAuth token, or a GitHub App
+user-to-server token. Classic `ghp_` PATs are not supported by Copilot CLI.
+The stack exports this only as `COPILOT_GITHUB_TOKEN`.
+
+For BYOK, the currently supported provider types are `openai`, `azure`, and
+`anthropic`. The `openai` type covers OpenAI and OpenAI Chat
+Completions-compatible services, including LiteLLM, Ollama, vLLM, and Foundry
+Local. Copilot requires a streaming model with tool/function-calling support.
+The wizard validates the provider URL, model identifier, provider type, and
+required key before saving. OpenAI-compatible local services may leave the API
+key blank; Azure OpenAI and Anthropic require one.
+
+Example values, entered through the wizard rather than placed in a tracked
+file:
+
+| Service | Type | Base URL example | API key |
+| --- | --- | --- | --- |
+| LiteLLM | `openai` | `https://litellm.example.com/v1` | Required by typical deployments |
+| Ollama | `openai` | `http://host.docker.internal:11434` | Usually blank |
+| vLLM | `openai` | `http://host.docker.internal:8000/v1` | Deployment dependent |
+| Azure OpenAI | `azure` | `https://RESOURCE.openai.azure.com/openai/deployments/DEPLOYMENT` | Required |
+| Anthropic | `anthropic` | `https://api.anthropic.com` | Required |
+
+When running a provider on the Docker host, use a host address reachable from
+the container. `localhost` inside the container is not the host. On Linux,
+this may require adding an appropriate Docker host gateway mapping or using a
+network-reachable address.
+
+BYOK-only mode can set `COPILOT_OFFLINE=true`, which prevents GitHub
+communication and telemetry. It does not make prompts air-gapped when the
+provider URL is remote: prompts and code context still go to that provider.
+Hybrid mode always disables offline mode so GitHub-integrated features, such
+as the GitHub MCP server, code search, and `/delegate`, remain available.
+
+`config/copilot/auth.env` is generated with owner-only permissions where the
+host filesystem supports them and is ignored by Git. The tracked
+`config/copilot/auth.env.example` contains placeholders only and is never
+loaded automatically. The mount is configured relative to this repository, so
+both direct Compose and launchers invoked from another directory use the same
+stack configuration.
+
+#### Automatic workspace trust
+
+Automatic trust is disabled by default. Set
+`COPILOT_AUTO_TRUST_WORKSPACE=1` before starting the launcher or Compose to
+add only the selected container working directory to that workspace's
+`.copilot/config.json`. Existing JSON properties are preserved and updates are
+atomic. Invalid JSON is reported and left untouched. Set
+`COPILOT_AUTO_TRUST_WORKSPACE=0` (the default) to disable it.
+
+#### Security limitations
+
+The generated authentication file is plaintext, not encrypted. Treat
+`config/copilot/` as sensitive: secrets can potentially be read by root, users
+with access to this repository directory, users with access to the Docker
+daemon, and processes able to inspect the running container environment.
+Do not copy `auth.env` into image build arguments, Dockerfiles, logs, issue
+reports, or source control. Reconfigure or reset the stack if a credential is
+exposed.
 
 ### Corporate or proxy networks
 

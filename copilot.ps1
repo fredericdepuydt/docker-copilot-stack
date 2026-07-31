@@ -307,6 +307,23 @@ function New-DefaultWorkspaceFile {
     }
 }
 
+function Invoke-Compose {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments
+    )
+
+    if ($null -ne (Get-Command "docker-compose" -ErrorAction SilentlyContinue)) {
+        & docker-compose @Arguments
+        return
+    }
+    if ($null -ne (Get-Command "docker" -ErrorAction SilentlyContinue)) {
+        & docker compose @Arguments
+        return
+    }
+    throw "Docker Compose startup failed: neither 'docker-compose' nor 'docker' was found in PATH."
+}
+
 function Read-WorkspaceConfiguration {
     param(
         [Parameter(Mandatory)]
@@ -354,6 +371,27 @@ function Invoke-CopilotLauncher {
         throw "Docker Compose file not found: $composeFile"
     }
 
+    $stackCommand = switch ($Arguments[0]) {
+        "--stack-configure-auth" { "configure-auth"; break }
+        "--stack-show-auth" { "show-auth"; break }
+        "--stack-reset-auth" { "reset-auth"; break }
+        default { $null }
+    }
+    if ($null -ne $stackCommand) {
+        if ($Arguments.Count -ne 1) {
+            throw "$($Arguments[0]) does not accept additional arguments."
+        }
+        Invoke-Compose -Arguments @(
+            "-f", $composeFile,
+            "run", "--rm",
+            "copilot", $stackCommand
+        )
+        if ($LASTEXITCODE -ne 0) {
+            throw "Docker Compose or Copilot exited with code $LASTEXITCODE."
+        }
+        return
+    }
+
     $workspaceFiles = @(
         Get-ChildItem -LiteralPath $currentDirectory -Filter "*.code-workspace" -ErrorAction Stop |
             Where-Object { -not $_.PSIsContainer } |
@@ -396,10 +434,13 @@ function Invoke-CopilotLauncher {
     Write-Host ("Copilot config:     {0}" -f $containerConfig)
     Write-Host "Copilot mode:       YOLO, all paths allowed"
 
-    if ($null -eq (Get-Command "docker-compose" -ErrorAction SilentlyContinue)) {
-        throw "Docker Compose startup failed: 'docker-compose' was not found in PATH."
+    $mandatoryCopilotArgs = @()
+    if ($Arguments -notcontains "--allow-all-paths") {
+        $mandatoryCopilotArgs += "--allow-all-paths"
     }
-
+    if ($Arguments -notcontains "--yolo") {
+        $mandatoryCopilotArgs += "--yolo"
+    }
     $dockerArgs = @(
         "-f", $composeFile,
         "run", "--rm",
@@ -407,14 +448,13 @@ function Invoke-CopilotLauncher {
         "--workdir", $containerWorkspace,
         "-e", "COPILOT_CONFIG_DIR=$containerConfig",
         "copilot",
-        "copilot",
-        "--allow-all-paths",
-        "--yolo"
+        "copilot"
     )
+    $dockerArgs += $mandatoryCopilotArgs
     $dockerArgs += $Arguments
 
     try {
-        & docker-compose @dockerArgs
+        Invoke-Compose -Arguments $dockerArgs
     } catch {
         throw "Docker Compose startup failed: $($_.Exception.Message)"
     }
