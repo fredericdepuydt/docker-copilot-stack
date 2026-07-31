@@ -27,10 +27,11 @@ source ~/.bashrc
 copilot
 ```
 
-The installer creates `~/.local/bin/copilot` as a symlink to this repository's
-launcher and adds that directory to the current shell's profile when needed.
-Keep the repository at the same path after installation. Bash, Zsh, Fish, and
-POSIX-style profile files are supported.
+The installer adds a `copilot` shell function to the current shell's profile.
+That function invokes the launcher in this repository while preserving the
+caller's current directory for `.code-workspace` discovery. Keep the repository
+at the same path after installation. Bash, Zsh, Fish, and POSIX-style profile
+files are supported.
 
 ### Windows
 
@@ -41,6 +42,9 @@ Install the PowerShell launcher:
 . $PROFILE
 copilot
 ```
+
+The PowerShell installer adds the same repository-bound `copilot` function to
+the current user's PowerShell profile.
 
 Arguments are forwarded to the Copilot CLI after the required access flags:
 

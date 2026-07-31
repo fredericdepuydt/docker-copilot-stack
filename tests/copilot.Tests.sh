@@ -218,11 +218,28 @@ set -e
 assert_equal "17" "$failure_status" "Compose exit code."
 assert_contains "$failure_output" "exited with code 17" "Compose failure message."
 
+LEGACY_BIN="$TEST_ROOT/legacy-bin"
+mkdir -p -- "$LEGACY_BIN"
+ln -s -- "$LAUNCHER" "$LEGACY_BIN/copilot"
+(
+    cd -- "$NESTED_WORKSPACE"
+    PATH="$MOCK_BIN:$PATH" \
+        COPILOT_TEST_ARGUMENTS="$ARGUMENTS_FILE" \
+        "$LEGACY_BIN/copilot" --help >/dev/null
+)
+load_arguments
+assert_equal \
+    "$REPOSITORY/docker-compose.yaml" \
+    "$(argument_after -f)" \
+    "Legacy symlink Compose path."
+
 INSTALL_HOME="$TEST_ROOT/install-home"
 INSTALL_DIRECTORY="$INSTALL_HOME/local bin"
 PROFILE="$INSTALL_HOME/.bashrc"
 mkdir -p -- "$INSTALL_HOME"
 printf 'export EXISTING_SETTING=1\n' >"$PROFILE"
+mkdir -p -- "$INSTALL_DIRECTORY"
+ln -s -- "$LAUNCHER" "$INSTALL_DIRECTORY/copilot"
 for run in 1 2; do
     HOME="$INSTALL_HOME" \
         SHELL=/bin/bash \
@@ -232,14 +249,29 @@ for run in 1 2; do
         "$INSTALLER" >/dev/null
 done
 
-[[ -L "$INSTALL_DIRECTORY/copilot" ]] || fail "Installed launcher is not a symlink."
-assert_equal \
-    "$LAUNCHER" \
-    "$(realpath -e -- "$INSTALL_DIRECTORY/copilot")" \
-    "Installed launcher target."
+[[ ! -e "$INSTALL_DIRECTORY/copilot" ]] ||
+    fail "Legacy launcher symlink was not removed."
 marker_count=$(grep -Fxc "# >>> docker copilot launcher >>>" "$PROFILE")
 assert_equal "1" "$marker_count" "Installer idempotency."
-assert_contains "$(<"$PROFILE")" "$INSTALL_DIRECTORY" "Installed PATH entry."
+assert_contains "$(<"$PROFILE")" "copilot() {" "Installed Copilot function."
+assert_contains "$(<"$PROFILE")" "$LAUNCHER" "Installed launcher path."
 assert_contains "$(<"$PROFILE")" "EXISTING_SETTING=1" "Existing profile content."
+
+FUNCTION_WORKSPACE="$TEST_ROOT/function-workspace"
+mkdir -p -- "$FUNCTION_WORKSPACE"
+write_workspace "$FUNCTION_WORKSPACE/function.code-workspace" "." "."
+(
+    cd -- "$FUNCTION_WORKSPACE"
+    PATH="$MOCK_BIN:$PATH"
+    COPILOT_TEST_ARGUMENTS="$ARGUMENTS_FILE"
+    export PATH COPILOT_TEST_ARGUMENTS
+    source "$PROFILE"
+    copilot --help >/dev/null
+)
+load_arguments
+assert_equal \
+    "$FUNCTION_WORKSPACE:/workspace" \
+    "$(argument_after -v)" \
+    "Installed function current working directory."
 
 echo "All Linux Copilot launcher tests passed."

@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+LAUNCHER_SOURCE=${BASH_SOURCE[0]}
+while [[ -L "$LAUNCHER_SOURCE" ]]; do
+    SOURCE_DIRECTORY=$(cd -- "$(dirname -- "$LAUNCHER_SOURCE")" && pwd -P)
+    LINK_TARGET=$(readlink -- "$LAUNCHER_SOURCE")
+    if [[ "$LINK_TARGET" == /* ]]; then
+        LAUNCHER_SOURCE=$LINK_TARGET
+    else
+        LAUNCHER_SOURCE="$SOURCE_DIRECTORY/$LINK_TARGET"
+    fi
+done
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "$LAUNCHER_SOURCE")" && pwd -P)
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yaml"
 
 fail() {

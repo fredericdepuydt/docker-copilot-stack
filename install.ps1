@@ -1,11 +1,11 @@
 $ErrorActionPreference = "Stop"
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$copilotScriptPath = Join-Path $scriptDir "copilot.ps1"
+$copilotScriptPath = Join-Path $PSScriptRoot "copilot.ps1"
 
 if (-not (Test-Path -LiteralPath $copilotScriptPath)) {
     throw "Expected script not found: $copilotScriptPath"
 }
+$copilotScriptPath = (Resolve-Path -LiteralPath $copilotScriptPath).Path
 
 $profilePath = $PROFILE.CurrentUserCurrentHost
 $profileDir = Split-Path -Parent $profilePath
@@ -43,5 +43,5 @@ if ($profileContent -match [regex]::Escape($startMarker)) {
 
 Set-Content -LiteralPath $profilePath -Value $updatedContent
 
-Write-Host "Added copilot alias to $profilePath"
+Write-Host "Added copilot function to $profilePath"
 Write-Host "Run '. `$PROFILE' (or restart PowerShell), then use: copilot"
