@@ -244,8 +244,10 @@ For `github` and `hybrid`, the setup wizard opens the official `copilot login`
 flow. Copilot CLI writes its GitHub credentials centrally to
 `config/copilot/config.json`; the stack never stores or exports a GitHub token through
 `auth.env`. Existing token entries in `auth.env` are ignored and removed on the
-next configuration save. Run `copilot login` again from the container if GitHub
-credentials need to be changed.
+next configuration save. A direct `copilot login` bypasses stack provider loading,
+so it can repair GitHub credentials even if `auth.env` is stale or incomplete.
+GitHub mode also ignores leftover BYOK fields. Run `copilot login` again from the
+container if GitHub credentials need to be changed.
 
 For BYOK, the currently supported provider types are `openai`, `azure`, and
 `anthropic`. The `openai` type covers OpenAI and OpenAI Chat

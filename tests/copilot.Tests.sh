@@ -322,6 +322,19 @@ load_auth >/dev/null
 [[ ! -v COPILOT_GITHUB_TOKEN && ! -v COPILOT_PROVIDER_TYPE && ! -v COPILOT_PROVIDER_BASE_URL && ! -v COPILOT_OFFLINE ]]
 [[ "$(<"$AUTH_CONFIG_FILE")" != *COPILOT_GITHUB_TOKEN* ]]
 [[ "$COPILOT_CONFIG_DIR" != "$STACK_CONFIG_DIR" ]]
+printf 'COPILOT_STACK_AUTH_MODE=github\nCOPILOT_PROVIDER_TYPE=openai\nCOPILOT_PROVIDER_BASE_URL=https://stale.example.test/v1\n' >"$STACK_CONFIG_DIR/github-stale.env"
+read_auth_config "$STACK_CONFIG_DIR/github-stale.env"
+validate_auth_config
+[[ -z "$AUTH_PROVIDER_TYPE" && -z "$AUTH_PROVIDER_BASE_URL" && "$AUTH_OFFLINE" == false ]]
+printf 'COPILOT_STACK_AUTH_MODE=github\n' >"$STACK_CONFIG_DIR/github-minimal.env"
+read_auth_config "$STACK_CONFIG_DIR/github-minimal.env"
+validate_auth_config
+[[ "$AUTH_MODE" == github && "$AUTH_OFFLINE" == false ]]
+is_copilot_login_command copilot --allow-all-paths --yolo login
+if is_copilot_login_command copilot --allow-all-paths --yolo chat; then
+    echo "A non-login Copilot command bypassed stack authentication." >&2
+    exit 1
+fi
 printf 'COPILOT_STACK_AUTH_MODE=github\nCOPILOT_GITHUB_TOKEN=legacy-token\nCOPILOT_PROVIDER_TYPE=\nCOPILOT_PROVIDER_BASE_URL=\nCOPILOT_PROVIDER_API_KEY=\nCOPILOT_MODEL=\nCOPILOT_OFFLINE=false\n' >"$STACK_CONFIG_DIR/legacy.env"
 read_auth_config "$STACK_CONFIG_DIR/legacy.env"
 write_values github "" "" "" "" false

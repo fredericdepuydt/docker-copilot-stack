@@ -141,18 +141,26 @@ read_auth_config() {
         esac
     done <"$config_file"
 
-    for required_key in \
-        COPILOT_STACK_AUTH_MODE \
-        COPILOT_PROVIDER_TYPE \
-        COPILOT_PROVIDER_BASE_URL \
-        COPILOT_PROVIDER_API_KEY \
-        COPILOT_MODEL \
-        COPILOT_OFFLINE; do
+    for required_key in COPILOT_STACK_AUTH_MODE; do
         if [[ -z ${seen[$required_key]+present} ]]; then
             fail "Authentication configuration is missing '$required_key'."
             return 1
         fi
     done
+
+    if [[ "$AUTH_MODE" == byok || "$AUTH_MODE" == hybrid ]]; then
+        for required_key in \
+            COPILOT_PROVIDER_TYPE \
+            COPILOT_PROVIDER_BASE_URL \
+            COPILOT_PROVIDER_API_KEY \
+            COPILOT_MODEL \
+            COPILOT_OFFLINE; do
+            if [[ -z ${seen[$required_key]+present} ]]; then
+                fail "Authentication configuration is missing '$required_key'."
+                return 1
+            fi
+        done
+    fi
 }
 
 validate_auth_config() {
@@ -165,16 +173,11 @@ validate_auth_config() {
 
     case "$AUTH_MODE" in
         github)
-            [[ -z "$AUTH_PROVIDER_TYPE" && -z "$AUTH_PROVIDER_BASE_URL" &&
-                -z "$AUTH_PROVIDER_API_KEY" && -z "$AUTH_MODEL" ]] ||
-                {
-                    fail "GitHub authentication must not include BYOK provider settings."
-                    return 1
-                }
-            [[ "$AUTH_OFFLINE" == false ]] || {
-                fail "GitHub authentication cannot enable offline mode."
-                return 1
-            }
+            AUTH_PROVIDER_TYPE=
+            AUTH_PROVIDER_BASE_URL=
+            AUTH_PROVIDER_API_KEY=
+            AUTH_MODEL=
+            AUTH_OFFLINE=false
             ;;
         byok | hybrid)
             [[ "$AUTH_PROVIDER_TYPE" == openai ||
@@ -727,6 +730,17 @@ run_as_container_user() {
     exec gosu "$USER_NAME" "$@"
 }
 
+is_copilot_login_command() {
+    local argument
+
+    [[ ${1:-} == copilot ]] || return 1
+    shift
+    for argument in "$@"; do
+        [[ "$argument" == login ]] && return 0
+    done
+    return 1
+}
+
 main() {
     clear_stack_auth_environment
 
@@ -755,9 +769,15 @@ main() {
             ;;
     esac
 
-    load_auth
     configure_workspace_trust
     chown -R "$USER_NAME:$GROUP_NAME" "$COPILOT_CONFIG_DIR"
+
+    if is_copilot_login_command "$@"; then
+        clear_stack_auth_environment
+        run_as_container_user "$@"
+    fi
+
+    load_auth
     run_as_container_user "$@"
 }
 
