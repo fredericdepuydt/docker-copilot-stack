@@ -307,36 +307,39 @@ USER_HOME=
 
 write_values() {
     AUTH_MODE=$1
-    AUTH_GITHUB_TOKEN=$2
-    AUTH_PROVIDER_TYPE=$3
-    AUTH_PROVIDER_BASE_URL=$4
-    AUTH_PROVIDER_API_KEY=$5
-    AUTH_MODEL=$6
-    AUTH_OFFLINE=$7
+    AUTH_PROVIDER_TYPE=$2
+    AUTH_PROVIDER_BASE_URL=$3
+    AUTH_PROVIDER_API_KEY=$4
+    AUTH_MODEL=$5
+    AUTH_OFFLINE=$6
     write_auth_config
 }
 
-write_values github github_pat_test "" "" "" "" false
+write_values github "" "" "" "" false
 clear_stack_auth_environment
 load_auth >/dev/null
-[[ "${COPILOT_GITHUB_TOKEN:-}" == github_pat_test ]]
-[[ ! -v COPILOT_PROVIDER_TYPE && ! -v COPILOT_PROVIDER_BASE_URL && ! -v COPILOT_OFFLINE ]]
+[[ ! -v COPILOT_GITHUB_TOKEN && ! -v COPILOT_PROVIDER_TYPE && ! -v COPILOT_PROVIDER_BASE_URL && ! -v COPILOT_OFFLINE ]]
+[[ "$(<"$AUTH_CONFIG_FILE")" != *COPILOT_GITHUB_TOKEN* ]]
+printf 'COPILOT_STACK_AUTH_MODE=github\nCOPILOT_GITHUB_TOKEN=legacy-token\nCOPILOT_PROVIDER_TYPE=\nCOPILOT_PROVIDER_BASE_URL=\nCOPILOT_PROVIDER_API_KEY=\nCOPILOT_MODEL=\nCOPILOT_OFFLINE=false\n' >"$STACK_CONFIG_DIR/legacy.env"
+read_auth_config "$STACK_CONFIG_DIR/legacy.env"
+write_values github "" "" "" "" false
+[[ "$(<"$AUTH_CONFIG_FILE")" != *COPILOT_GITHUB_TOKEN* ]]
 
-write_values byok "" openai http://localhost:11434 "" llama3 true
+write_values byok openai http://localhost:11434 "" llama3 true
 clear_stack_auth_environment
 load_auth >/dev/null
 [[ ! -v COPILOT_GITHUB_TOKEN && "${COPILOT_PROVIDER_TYPE:-}" == openai ]]
 [[ "${COPILOT_OFFLINE:-}" == true ]]
 
-write_values hybrid github_pat_test openai https://litellm.example.test/v1 provider-key model-alias false
+write_values hybrid openai https://litellm.example.test/v1 provider-key model-alias false
 clear_stack_auth_environment
 load_auth >/dev/null
-[[ "${COPILOT_GITHUB_TOKEN:-}" == github_pat_test ]]
+[[ ! -v COPILOT_GITHUB_TOKEN ]]
 [[ "${COPILOT_PROVIDER_API_KEY:-}" == provider-key ]]
 [[ ! -v COPILOT_OFFLINE ]]
 
 summary=$(show_auth)
-[[ "$summary" != *github_pat_test* && "$summary" != *provider-key* ]]
+[[ "$summary" != *provider-key* ]]
 
 before_failure=$(<"$AUTH_CONFIG_FILE")
 AUTH_OFFLINE=true
@@ -348,7 +351,6 @@ fi
 
 for invalid_mode in invalid byok; do
     AUTH_MODE=$invalid_mode
-    AUTH_GITHUB_TOKEN=
     AUTH_PROVIDER_TYPE=
     AUTH_PROVIDER_BASE_URL=
     AUTH_PROVIDER_API_KEY=
@@ -366,7 +368,6 @@ for invalid_mode in invalid byok; do
 done
 
 AUTH_MODE=byok
-AUTH_GITHUB_TOKEN=
 AUTH_PROVIDER_TYPE=openai
 AUTH_PROVIDER_BASE_URL=
 AUTH_PROVIDER_API_KEY=
@@ -384,7 +385,6 @@ if read_auth_config "$STACK_CONFIG_DIR/cr.env"; then
 fi
 
 AUTH_MODE=$'github\ninvalid'
-AUTH_GITHUB_TOKEN=github_pat_test
 AUTH_PROVIDER_TYPE=
 AUTH_PROVIDER_BASE_URL=
 AUTH_PROVIDER_API_KEY=
@@ -420,7 +420,7 @@ if (
 fi
 grep -Fqx '{ invalid json' "$WORKSPACE/.copilot/config.json"
 
-write_values github github_pat_test "" "" "" "" false
+write_values github "" "" "" "" false
 printf 'keep' >"$WORKSPACE/.copilot/state"
 reset_auth --yes >/dev/null
 [[ ! -e "$AUTH_CONFIG_FILE" ]] || exit 1

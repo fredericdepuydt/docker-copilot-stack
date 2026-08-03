@@ -10,7 +10,6 @@ GROUP_NAME=appuser_group
 USER_HOME=
 COPILOT_CONFIG_DIR=${COPILOT_CONFIG_DIR:-/workspace/.copilot}
 AUTH_MODE=
-AUTH_GITHUB_TOKEN=
 AUTH_PROVIDER_TYPE=
 AUTH_PROVIDER_BASE_URL=
 AUTH_PROVIDER_API_KEY=
@@ -75,7 +74,6 @@ try {
 
 reset_auth_values() {
     AUTH_MODE=
-    AUTH_GITHUB_TOKEN=
     AUTH_PROVIDER_TYPE=
     AUTH_PROVIDER_BASE_URL=
     AUTH_PROVIDER_API_KEY=
@@ -88,7 +86,6 @@ get_config_value() {
 
     case "$key" in
         COPILOT_STACK_AUTH_MODE) printf '%s' "$AUTH_MODE" ;;
-        COPILOT_GITHUB_TOKEN) printf '%s' "$AUTH_GITHUB_TOKEN" ;;
         COPILOT_PROVIDER_TYPE) printf '%s' "$AUTH_PROVIDER_TYPE" ;;
         COPILOT_PROVIDER_BASE_URL) printf '%s' "$AUTH_PROVIDER_BASE_URL" ;;
         COPILOT_PROVIDER_API_KEY) printf '%s' "$AUTH_PROVIDER_API_KEY" ;;
@@ -129,7 +126,9 @@ read_auth_config() {
 
         case "$key" in
             COPILOT_STACK_AUTH_MODE) AUTH_MODE=$value ;;
-            COPILOT_GITHUB_TOKEN) AUTH_GITHUB_TOKEN=$value ;;
+            COPILOT_GITHUB_TOKEN)
+                log_warning "ignoring obsolete GitHub token setting; run copilot login to store GitHub credentials in config.json."
+                ;;
             COPILOT_PROVIDER_TYPE) AUTH_PROVIDER_TYPE=$value ;;
             COPILOT_PROVIDER_BASE_URL) AUTH_PROVIDER_BASE_URL=$value ;;
             COPILOT_PROVIDER_API_KEY) AUTH_PROVIDER_API_KEY=$value ;;
@@ -144,7 +143,6 @@ read_auth_config() {
 
     for required_key in \
         COPILOT_STACK_AUTH_MODE \
-        COPILOT_GITHUB_TOKEN \
         COPILOT_PROVIDER_TYPE \
         COPILOT_PROVIDER_BASE_URL \
         COPILOT_PROVIDER_API_KEY \
@@ -159,7 +157,6 @@ read_auth_config() {
 
 validate_auth_config() {
     validate_single_line_value "Authentication mode" "$AUTH_MODE" || return 1
-    validate_single_line_value "GitHub token" "$AUTH_GITHUB_TOKEN" || return 1
     validate_single_line_value "Provider type" "$AUTH_PROVIDER_TYPE" || return 1
     validate_single_line_value "Provider URL" "$AUTH_PROVIDER_BASE_URL" || return 1
     validate_single_line_value "Provider API key" "$AUTH_PROVIDER_API_KEY" || return 1
@@ -168,10 +165,6 @@ validate_auth_config() {
 
     case "$AUTH_MODE" in
         github)
-            [[ -n "$AUTH_GITHUB_TOKEN" ]] || {
-                fail "GitHub authentication requires a GitHub token."
-                return 1
-            }
             [[ -z "$AUTH_PROVIDER_TYPE" && -z "$AUTH_PROVIDER_BASE_URL" &&
                 -z "$AUTH_PROVIDER_API_KEY" && -z "$AUTH_MODEL" ]] ||
                 {
@@ -207,19 +200,11 @@ validate_auth_config() {
                 }
             fi
             if [[ "$AUTH_MODE" == hybrid ]]; then
-                [[ -n "$AUTH_GITHUB_TOKEN" ]] || {
-                    fail "Hybrid authentication requires a GitHub token."
-                    return 1
-                }
                 [[ "$AUTH_OFFLINE" == false ]] || {
                     fail "Hybrid authentication cannot enable offline mode."
                     return 1
                 }
             else
-                [[ -z "$AUTH_GITHUB_TOKEN" ]] || {
-                    fail "BYOK-only authentication must not include a GitHub token."
-                    return 1
-                }
                 [[ "$AUTH_OFFLINE" == true || "$AUTH_OFFLINE" == false ]] ||
                     {
                         fail "Offline setting must be true or false."
@@ -255,7 +240,6 @@ write_auth_config() {
 
     if ! {
         printf 'COPILOT_STACK_AUTH_MODE=%s\n' "$AUTH_MODE"
-        printf 'COPILOT_GITHUB_TOKEN=%s\n' "$AUTH_GITHUB_TOKEN"
         printf 'COPILOT_PROVIDER_TYPE=%s\n' "$AUTH_PROVIDER_TYPE"
         printf 'COPILOT_PROVIDER_BASE_URL=%s\n' "$AUTH_PROVIDER_BASE_URL"
         printf 'COPILOT_PROVIDER_API_KEY=%s\n' "$AUTH_PROVIDER_API_KEY"
@@ -361,6 +345,15 @@ configure_byok_values() {
     fi
 }
 
+configure_github_login() {
+    printf '%s\n' "Starting GitHub Copilot sign-in. Copilot CLI stores the resulting credentials in $COPILOT_CONFIG_DIR/config.json."
+    if [[ -n "$USER_HOME" ]]; then
+        gosu "$USER_NAME" copilot login
+    else
+        copilot login
+    fi
+}
+
 configure_auth() {
     local selection
 
@@ -378,9 +371,8 @@ configure_auth() {
     case "$selection" in
         1)
             AUTH_MODE=github
-            printf '%s\n' "Use a user-owned fine-grained PAT with the Copilot Requests account permission, an OAuth token, or a GitHub App user-to-server token. Classic ghp_ PATs are not supported."
-            AUTH_GITHUB_TOKEN=$(read_secret_value "GitHub token: " required) || return 1
             AUTH_OFFLINE=false
+            configure_github_login || return 1
             ;;
         2)
             AUTH_MODE=byok
@@ -388,9 +380,8 @@ configure_auth() {
             ;;
         3)
             AUTH_MODE=hybrid
-            printf '%s\n' "Use a user-owned fine-grained PAT with the Copilot Requests account permission, an OAuth token, or a GitHub App user-to-server token. Classic ghp_ PATs are not supported."
-            AUTH_GITHUB_TOKEN=$(read_secret_value "GitHub token: " required) || return 1
             configure_byok_values || return 1
+            configure_github_login || return 1
             ;;
         *)
             fail "Authentication mode must be 1, 2, or 3."
@@ -454,7 +445,6 @@ load_auth() {
 
     case "$AUTH_MODE" in
         github)
-            export COPILOT_GITHUB_TOKEN="$AUTH_GITHUB_TOKEN"
             ;;
         byok)
             export COPILOT_PROVIDER_TYPE="$AUTH_PROVIDER_TYPE"
@@ -464,7 +454,6 @@ load_auth() {
             [[ "$AUTH_OFFLINE" == true ]] && export COPILOT_OFFLINE=true
             ;;
         hybrid)
-            export COPILOT_GITHUB_TOKEN="$AUTH_GITHUB_TOKEN"
             export COPILOT_PROVIDER_TYPE="$AUTH_PROVIDER_TYPE"
             export COPILOT_PROVIDER_BASE_URL="$AUTH_PROVIDER_BASE_URL"
             export COPILOT_PROVIDER_API_KEY="$AUTH_PROVIDER_API_KEY"
