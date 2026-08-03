@@ -331,8 +331,17 @@ read_auth_config "$STACK_CONFIG_DIR/github-minimal.env"
 validate_auth_config
 [[ "$AUTH_MODE" == github && "$AUTH_OFFLINE" == false ]]
 is_copilot_login_command copilot --allow-all-paths --yolo login
+is_copilot_login_command copilot --model auto login
 if is_copilot_login_command copilot --allow-all-paths --yolo chat; then
     echo "A non-login Copilot command bypassed stack authentication." >&2
+    exit 1
+fi
+if is_copilot_login_command copilot --prompt login; then
+    echo "A prompt value bypassed stack authentication." >&2
+    exit 1
+fi
+if is_copilot_login_command copilot --prompt=login; then
+    echo "An inline prompt value bypassed stack authentication." >&2
     exit 1
 fi
 printf 'COPILOT_STACK_AUTH_MODE=github\nCOPILOT_GITHUB_TOKEN=legacy-token\nCOPILOT_PROVIDER_TYPE=\nCOPILOT_PROVIDER_BASE_URL=\nCOPILOT_PROVIDER_API_KEY=\nCOPILOT_MODEL=\nCOPILOT_OFFLINE=false\n' >"$STACK_CONFIG_DIR/legacy.env"

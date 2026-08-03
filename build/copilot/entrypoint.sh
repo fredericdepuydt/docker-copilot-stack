@@ -659,11 +659,28 @@ run_as_container_user() {
 
 is_copilot_login_command() {
     local argument
+    local expects_value=false
 
     [[ ${1:-} == copilot ]] || return 1
     shift
     for argument in "$@"; do
-        [[ "$argument" == login ]] && return 0
+        if [[ "$expects_value" == true ]]; then
+            expects_value=false
+            continue
+        fi
+        case "$argument" in
+            --) return 1 ;;
+            -C | -i | -n | -p | -r | --prompt | --add-dir | --add-github-mcp-tool | --add-github-mcp-toolset | \
+            --additional-mcp-config | --agent | --allow-tool | --allow-url | --attachment | --available-tools | \
+            --bash-env | --connect | --context | --deny-tool | --deny-url | --effort | --excluded-tools | \
+            --extension-sdk-path | --log-dir | --log-level | --max-ai-credits | --max-autopilot-continues | \
+            --mode | --model | --mouse | --output-format | --plugin-dir | --session-id | --share)
+                expects_value=true
+                ;;
+            -?* | --?*=*) ;;
+            login) return 0 ;;
+            *) return 1 ;;
+        esac
     done
     return 1
 }
