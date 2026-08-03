@@ -112,7 +112,7 @@ Host root:          /home/alice/Source/Codebase
 Host workspace:     /home/alice/Source/Codebase/Applications/MyApplication
 Docker mount:       /home/alice/Source/Codebase -> /workspace
 Container cwd:      /workspace/Applications/MyApplication
-Copilot config:     /workspace/Applications/MyApplication/.copilot
+Copilot workspace state: /workspace/Applications/MyApplication/.copilot
 Container user:     1000:1000
 ```
 
@@ -143,7 +143,7 @@ Host root:          <resolved-root>
 Host workspace:     <resolved-workspace>
 Docker mount:       <resolved-root> -> /workspace
 Container cwd:      <container-workspace>
-Copilot config:     <container-workspace>/.copilot
+Copilot workspace state: <container-workspace>/.copilot
 Container user:     <host-uid>:<host-gid>
 Container name:     copilot-<projectname>-<UTC timestamp>
 Copilot mode:       YOLO, all paths allowed
@@ -153,9 +153,9 @@ When no workspace file is used, `VS Code workspace` displays `<current directory
 `Container user` is shown by the Linux launcher; the PowerShell launcher uses
 the Compose environment defaults.
 
-### Workspace-scoped Copilot state and instructions
+### Workspace-scoped state and central login
 
-`COPILOT_CONFIG_DIR` is set to `Workspace/.copilot` inside the mounted Root. Existing project-specific Copilot configuration and session state therefore remain persistent across container runs.
+`COPILOT_CONFIG_DIR` points to `Workspace/.copilot` inside the mounted Root. Sessions, logs, command history, and other workspace-related Copilot state therefore remain local to the selected workspace. Its `config.json` is a symbolic link to the central `config/copilot/config.json`, so GitHub login, settings, and trusted folders are shared without centralizing workspace session files. On first use, properties from an existing workspace `config.json` are merged into the central file without replacing central values, then the workspace file becomes the symlink.
 
 The container working directory is set to Workspace, so Copilot discovers the project-specific `AGENTS.md` relative to that directory. The launcher does not copy `AGENTS.md` to Root. Instructions closer to files in shared-library directories can still apply through Copilot's normal hierarchical instruction discovery.
 
@@ -199,9 +199,9 @@ Authentication is persistent but deliberately separate from workspace state:
 
 | State | Host location | Container location |
 | --- | --- | --- |
-| Workspace sessions, instructions, trusted folders, and Copilot settings | `<selected workspace>/.copilot` | `COPILOT_CONFIG_DIR` |
+| Workspace sessions, logs, command history, and other CLI state | `<selected workspace>/.copilot` | `COPILOT_CONFIG_DIR` |
+| Shared GitHub login, settings, and trusted folders | `config/copilot/config.json` | `COPILOT_CONFIG_DIR/config.json` (symlink target) |
 | Stack mode and BYOK settings | `config/copilot/auth.env` | `/copilot-stack-config/auth.env` |
-| GitHub login credentials (`github` and `hybrid` modes) | `<selected workspace>/.copilot/config.json` | `COPILOT_CONFIG_DIR/config.json` |
 
 On the first normal container start, when no `auth.env` exists, the entrypoint
 opens an interactive configuration wizard. Non-interactive starts fail clearly
@@ -228,9 +228,9 @@ docker compose run --rm copilot reset-auth
 docker compose run --rm copilot reset-auth --yes
 ```
 
-`reset-auth` deletes only `config/copilot/auth.env`; it never deletes a
-workspace `.copilot` directory or signs out GitHub. The launcher-specific arguments are consumed
-by the launcher and are never passed to Copilot CLI.
+`reset-auth` deletes only `config/copilot/auth.env`; it never deletes the shared
+`config/copilot/config.json`, workspace session state, or signs out GitHub. The launcher-specific arguments are consumed by the launcher and are
+never passed to Copilot CLI.
 
 The wizard supports three explicit modes:
 
@@ -241,8 +241,8 @@ The wizard supports three explicit modes:
 | `hybrid` | External provider | Enabled with a GitHub token | Not allowed |
 
 For `github` and `hybrid`, the setup wizard opens the official `copilot login`
-flow. Copilot CLI writes its GitHub credentials to the selected workspace's
-`.copilot/config.json`; the stack never stores or exports a GitHub token through
+flow. Copilot CLI writes its GitHub credentials centrally to
+`config/copilot/config.json`; the stack never stores or exports a GitHub token through
 `auth.env`. Existing token entries in `auth.env` are ignored and removed on the
 next configuration save. Run `copilot login` again from the container if GitHub
 credentials need to be changed.
@@ -288,7 +288,7 @@ stack configuration.
 #### Automatic workspace trust
 
 Automatic trust is enabled by default. The selected container working
-directory is added to that workspace's `.copilot/config.json` before startup.
+directory is added to the central `config/copilot/config.json` through the workspace symlink before startup.
 Existing JSON properties are preserved and updates are atomic. Invalid JSON is
 reported and left untouched. Set `COPILOT_AUTO_TRUST_WORKSPACE=0` before
 starting the launcher or Compose to disable it.
@@ -299,8 +299,8 @@ The generated BYOK configuration file is plaintext, not encrypted. Treat
 `config/copilot/` as sensitive when it contains a provider key: secrets can
 potentially be read by root, users with access to this repository directory,
 users with access to the Docker daemon, and processes able to inspect the
-running container environment. GitHub login credentials are held in the
-workspace `.copilot/config.json`. Do not copy credential files into image build
+running container environment. GitHub login credentials are held in the shared
+`config/copilot/config.json`. Do not copy credential files into image build
 arguments, Dockerfiles, logs, issue reports, or source control.
 
 ### Corporate or proxy networks

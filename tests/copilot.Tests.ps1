@@ -159,22 +159,22 @@ try {
     Set-WorkspaceFile -Path (Join-Path $equalDirectory "equal.code-workspace") -RootPath "." -WorkspacePath "."
     Invoke-TestLauncher -WorkingDirectory $equalDirectory -Arguments @("--help") | Out-Null
     Assert-Equal -Expected "/workspace" -Actual (Get-DockerArgumentAfter "--workdir") -Message "Equal Root/Workspace cwd."
-    Assert-Equal -Expected "/workspace/.copilot" -Actual ((Get-DockerArgumentAfter "-e") -replace "^COPILOT_CONFIG_DIR=", "") -Message "Equal Root/Workspace config path."
+    Assert-Equal -Expected "/workspace/.copilot" -Actual ((Get-DockerArgumentAfter "-e") -replace "^COPILOT_CONFIG_DIR=", "") -Message "Workspace Copilot config path."
 
     $rootWithSpaces = Join-Path $testRoot "Root With Spaces"
     $nestedWorkspace = Join-Path $rootWithSpaces "Applications/Area/My Application"
     New-Item -ItemType Directory -Path $nestedWorkspace -Force | Out-Null
-    $persistentConfig = Join-Path $nestedWorkspace ".copilot"
-    New-Item -ItemType Directory -Path $persistentConfig | Out-Null
-    Set-Content -LiteralPath (Join-Path $persistentConfig "existing-state") -Value "keep" -Encoding UTF8
+    $workspaceCopilotDirectory = Join-Path $nestedWorkspace ".copilot"
+    New-Item -ItemType Directory -Path $workspaceCopilotDirectory | Out-Null
+    Set-Content -LiteralPath (Join-Path $workspaceCopilotDirectory "existing-state") -Value "keep" -Encoding UTF8
     Set-WorkspaceFile -Path (Join-Path $nestedWorkspace "nested.code-workspace") -RootPath "../../.." -WorkspacePath "."
     Invoke-TestLauncher -WorkingDirectory $nestedWorkspace -Arguments @("chat", "--model", "test-model") | Out-Null
     Assert-Equal -Expected "/workspace/Applications/Area/My Application" -Actual (Get-DockerArgumentAfter "--workdir") -Message "Nested workspace cwd."
     Assert-Equal -Expected "${rootWithSpaces}:/workspace" -Actual (Get-DockerArgumentAfter "-v") -Message "Root mount with spaces."
     Assert-Equal -Expected "--name" -Actual (Get-DockerArgumentAfter "--name") -Message "Container name option."
     Assert-True -Condition ((Get-DockerArgumentAfter "--name") -match "^copilot-nested-\d{8}-\d{6}$") -Message "Unexpected workspace container name."
-    Assert-Equal -Expected "COPILOT_CONFIG_DIR=/workspace/Applications/Area/My Application/.copilot" -Actual (Get-DockerArgumentAfter "-e") -Message "Nested workspace config path."
-    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $persistentConfig "existing-state")) -Message "Existing .copilot state was not preserved."
+    Assert-Equal -Expected "COPILOT_CONFIG_DIR=/workspace/Applications/Area/My Application/.copilot" -Actual (Get-DockerArgumentAfter "-e") -Message "Workspace Copilot config path."
+    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $workspaceCopilotDirectory "existing-state")) -Message "Workspace .copilot files were modified."
 
     $allowIndex = [array]::IndexOf($global:CopilotTestDockerArgs, "--allow-all-paths")
     Assert-True -Condition ($allowIndex -ge 0) -Message "--allow-all-paths was not forwarded."

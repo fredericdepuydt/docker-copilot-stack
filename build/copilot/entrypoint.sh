@@ -346,13 +346,86 @@ configure_byok_values() {
 }
 
 configure_github_login() {
-    printf '%s\n' "Starting GitHub Copilot sign-in. Copilot CLI stores the resulting credentials in $COPILOT_CONFIG_DIR/config.json."
+    printf '%s\n' "Starting GitHub Copilot sign-in. Copilot CLI stores config.json centrally in $STACK_CONFIG_DIR."
     if [[ -n "$USER_HOME" ]]; then
         gosu "$USER_NAME" copilot login
     else
         copilot login
     fi
 }
+
+setup_central_config_link() {
+    local central_config="$STACK_CONFIG_DIR/config.json"
+    local workspace_config="$COPILOT_CONFIG_DIR/config.json"
+
+    prepare_stack_config_directory || return 1
+    mkdir -p -- "$COPILOT_CONFIG_DIR"
+    if [[ -L "$workspace_config" ]]; then
+        [[ "$(readlink -- "$workspace_config")" == "$central_config" ]] || {
+            fail "$workspace_config links to an unexpected location."
+            return 1
+        }
+    elif [[ -e "$workspace_config" ]]; then
+        if [[ ! -e "$central_config" ]]; then
+            mv -- "$workspace_config" "$central_config"
+        else
+            COPILOT_CENTRAL_CONFIG="$central_config" COPILOT_WORKSPACE_CONFIG="$workspace_config" node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
+const workspaceFile = process.env.COPILOT_WORKSPACE_CONFIG;
+let central;
+let workspace;
+try {
+  central = JSON.parse(fs.readFileSync(centralFile, "utf8"));
+  workspace = JSON.parse(fs.readFileSync(workspaceFile, "utf8"));
+} catch {
+  console.error("copilot-stack: central or workspace config.json is invalid; migration was not performed.");
+  process.exit(1);
+}
+if (!central || Array.isArray(central) || typeof central !== "object" ||
+    !workspace || Array.isArray(workspace) || typeof workspace !== "object") {
+  console.error("copilot-stack: central and workspace config.json files must contain JSON objects.");
+  process.exit(1);
+}
+for (const [key, value] of Object.entries(workspace)) {
+  if (!Object.prototype.hasOwnProperty.call(central, key)) central[key] = value;
+}
+const temporaryFile = path.join(
+  path.dirname(centralFile),
+  `.${path.basename(centralFile)}.${process.pid}.${Date.now()}.tmp`
+);
+try {
+  fs.writeFileSync(temporaryFile, `${JSON.stringify(central, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryFile, centralFile);
+} catch (error) {
+  try {
+    fs.unlinkSync(temporaryFile);
+  } catch {}
+  console.error(`copilot-stack: could not migrate workspace config.json: ${error.message}`);
+  process.exit(1);
+}
+NODE
+            rm -- "$workspace_config"
+        fi
+        ln -s -- "$central_config" "$workspace_config"
+    else
+        ln -s -- "$central_config" "$workspace_config"
+    fi
+
+    [[ ! -e "$central_config" ]] || chmod 0600 -- "$central_config" ||
+        log_warning "could not restrict permissions on central Copilot configuration."
+    if [[ -n "$USER_HOME" ]]; then
+        chown "$USER_NAME:$GROUP_NAME" "$STACK_CONFIG_DIR" "$COPILOT_CONFIG_DIR" ||
+            log_warning "could not set Copilot configuration directory ownership."
+        [[ ! -e "$central_config" ]] || chown "$USER_NAME:$GROUP_NAME" "$central_config" ||
+            log_warning "could not set central Copilot configuration ownership."
+        chown -h "$USER_NAME:$GROUP_NAME" "$workspace_config" ||
+            log_warning "could not set central Copilot configuration link ownership."
+    fi
+}
+
 
 configure_auth() {
     local selection
@@ -500,7 +573,7 @@ reset_auth() {
 
 configure_workspace_trust() {
     local trust_setting=${COPILOT_AUTO_TRUST_WORKSPACE:-1}
-    local config_file="$COPILOT_CONFIG_DIR/config.json"
+    local config_file="$STACK_CONFIG_DIR/config.json"
 
     case "$trust_setting" in
         0 | false | FALSE) return 0 ;;
@@ -511,7 +584,7 @@ configure_workspace_trust() {
             ;;
     esac
 
-    mkdir -p -- "$COPILOT_CONFIG_DIR"
+    prepare_stack_config_directory || return 1
     COPILOT_TRUST_CONFIG_FILE="$config_file" COPILOT_TRUST_DIRECTORY="$PWD" node <<'NODE'
 const fs = require("fs");
 const path = require("path");
@@ -574,11 +647,11 @@ if (fs.existsSync(configFile)) {
   try {
     config = parseJsonc(fs.readFileSync(configFile, "utf8"));
   } catch {
-    console.error("copilot-stack: workspace Copilot configuration is invalid JSON; it was not modified.");
+    console.error("copilot-stack: shared Copilot configuration is invalid JSON; it was not modified.");
     process.exit(1);
   }
   if (config === null || Array.isArray(config) || typeof config !== "object") {
-    console.error("copilot-stack: workspace Copilot configuration must be a JSON object; it was not modified.");
+    console.error("copilot-stack: shared Copilot configuration must be a JSON object; it was not modified.");
     process.exit(1);
   }
 }
@@ -589,7 +662,7 @@ const trustKey = Object.prototype.hasOwnProperty.call(config, "trusted_folders")
     ? "trustedFolders"
     : "trusted_folders";
 if (Object.prototype.hasOwnProperty.call(config, trustKey) && !Array.isArray(config[trustKey])) {
-  console.error("copilot-stack: workspace trusted-folder configuration must be an array; it was not modified.");
+  console.error("copilot-stack: shared trusted-folder configuration must be an array; it was not modified.");
   process.exit(1);
 }
 
@@ -607,7 +680,7 @@ if (!trustedFolders.includes(trustedDirectory)) {
     try {
       fs.unlinkSync(temporaryFile);
     } catch {}
-    console.error(`copilot-stack: could not update workspace trust configuration: ${error.message}`);
+    console.error(`copilot-stack: could not update shared trust configuration: ${error.message}`);
     process.exit(1);
   }
 }
@@ -645,7 +718,9 @@ setup_container_user() {
         rm -rf -- "$USER_HOME/.copilot"
         ln -s "$COPILOT_CONFIG_DIR" "$USER_HOME/.copilot"
     fi
+    setup_central_config_link || return 1
     chown -R "$USER_NAME:$GROUP_NAME" "$USER_HOME" "$COPILOT_CONFIG_DIR"
+    chown -h "$USER_NAME:$GROUP_NAME" "$COPILOT_CONFIG_DIR/config.json"
 }
 
 run_as_container_user() {
@@ -656,6 +731,7 @@ main() {
     clear_stack_auth_environment
 
     if ! setup_container_user; then
+        setup_central_config_link
         load_auth
         configure_workspace_trust
         exec "$@"

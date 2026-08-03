@@ -39,4 +39,4 @@ docker-compose.yaml  # Defines the `copilot` service
 - **User mapping:** Always configure `PUID`/`PGID` environment variables to match the host user to avoid file permission issues on the mounted `/workspace` volume.
 - **CA certificates:** Place corporate/custom CA certs in `build/copilot/certs/` as `.crt` files. The Dockerfile installs them into the system trust store and configures npm to use them — this is required for proxied/corporate networks.
 - **No root execution:** The entrypoint falls back to running as root only if `appuser` creation fails; this should not happen in normal use.
-- **Copilot config storage:** The CLI stores tokens and config in `/home/appuser/.copilot` inside the container (not persisted across container recreations unless a volume is added).
+- **Copilot config storage:** The CLI home `.copilot` directory links to the selected workspace `.copilot`; its `config.json` links centrally to `/copilot-stack-config/config.json` for shared login and settings.
