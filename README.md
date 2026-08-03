@@ -155,9 +155,9 @@ the Compose environment defaults.
 
 ### Workspace-scoped state and central login
 
-`COPILOT_CONFIG_DIR` points to `Workspace/.copilot` inside the mounted Root, so sessions, logs, command history, settings, trusted folders, and other CLI state remain local to the selected workspace. On normal startup, central `config/copilot/config.json` values are merged into the workspace `config.json` and override matching workspace values; workspace-only values remain local. The central file is not modified during normal launches.
+`COPILOT_CONFIG_DIR` points to `Workspace/.copilot` inside the mounted Root, so sessions, logs, command history, trusted folders, and other CLI state remain local to the selected workspace. Modern Copilot preferences in `settings.json` also remain workspace-local, including the default model, reasoning effort, agent mode, context tier, terminal behavior, and feature preferences. This prevents preferences selected for one workspace from affecting another.
 
-Only `copilot login` temporarily links the workspace `config.json` to `config/copilot/config.json`, allowing the official CLI login flow to update shared GitHub credentials. The central file is seeded with exactly `trusted_folders: ["/workspace"]`; workspace-specific trust remains local.
+On normal startup, central `config/copilot/config.json` values are merged into the workspace `config.json` and override matching workspace values; workspace-only values remain local. The central file is not modified during normal launches. Only `copilot login` temporarily links the workspace `config.json` to `config/copilot/config.json`, allowing the official CLI login flow to update shared GitHub credentials. The central file is seeded with exactly `trusted_folders: ["/workspace"]`; workspace-specific trust remains local.
 
 The container working directory is set to Workspace, so Copilot discovers the project-specific `AGENTS.md` relative to that directory. The launcher does not copy `AGENTS.md` to Root. Instructions closer to files in shared-library directories can still apply through Copilot's normal hierarchical instruction discovery.
 
@@ -243,8 +243,8 @@ The wizard supports three explicit modes:
 | `byok` | External provider | Disabled unless the CLI can work without GitHub | Optional |
 | `hybrid` | External provider | Enabled with a GitHub token | Not allowed |
 
-For `github` and `hybrid`, the setup wizard opens the official `copilot login`
-flow. Copilot CLI writes its GitHub credentials centrally to
+For `github` and `hybrid`, the setup wizard opens the official `copilot login --device-code`
+flow, which displays a code to enter in a browser. Copilot CLI writes its GitHub credentials centrally to
 `config/copilot/config.json`; the stack never stores or exports a GitHub token through
 `auth.env`. Existing token entries in `auth.env` are ignored and removed on the
 next configuration save. A direct `copilot login` bypasses stack provider loading,

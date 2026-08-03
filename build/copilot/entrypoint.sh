@@ -352,9 +352,9 @@ configure_github_login() {
     printf '%s\n' "Starting GitHub Copilot sign-in. Copilot CLI stores config.json centrally in $STACK_CONFIG_DIR."
     link_central_config_for_login || return 1
     if [[ -n "$USER_HOME" ]]; then
-        gosu "$USER_NAME" copilot login
+        gosu "$USER_NAME" copilot login --device-code
     else
-        copilot login
+        copilot login --device-code
     fi
 }
 
@@ -717,7 +717,7 @@ main() {
     if is_copilot_login_command "$@"; then
         clear_stack_auth_environment
         link_central_config_for_login
-        run_as_container_user "$@"
+        run_as_container_user "$@" --device-code
     fi
 
     load_auth
