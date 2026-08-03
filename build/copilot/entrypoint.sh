@@ -350,6 +350,7 @@ configure_byok_values() {
 
 configure_github_login() {
     printf '%s\n' "Starting GitHub Copilot sign-in. Copilot CLI stores config.json centrally in $STACK_CONFIG_DIR."
+    link_central_config_for_login || return 1
     if [[ -n "$USER_HOME" ]]; then
         gosu "$USER_NAME" copilot login
     else
@@ -368,11 +369,11 @@ setup_central_config_link() {
             fail "$workspace_config links to an unexpected location."
             return 1
         }
-    elif [[ -e "$workspace_config" ]]; then
-        if [[ ! -e "$central_config" ]]; then
-            mv -- "$workspace_config" "$central_config"
-        else
-            COPILOT_CENTRAL_CONFIG="$central_config" COPILOT_WORKSPACE_CONFIG="$workspace_config" node <<'NODE'
+        rm -- "$workspace_config"
+    fi
+
+    if [[ -e "$central_config" ]]; then
+        COPILOT_CENTRAL_CONFIG="$central_config" COPILOT_WORKSPACE_CONFIG="$workspace_config" node <<'NODE'
 const fs = require("fs");
 const path = require("path");
 
@@ -382,9 +383,11 @@ let central;
 let workspace;
 try {
   central = JSON.parse(fs.readFileSync(centralFile, "utf8"));
-  workspace = JSON.parse(fs.readFileSync(workspaceFile, "utf8"));
+  workspace = fs.existsSync(workspaceFile)
+    ? JSON.parse(fs.readFileSync(workspaceFile, "utf8"))
+    : {};
 } catch {
-  console.error("copilot-stack: central or workspace config.json is invalid; migration was not performed.");
+  console.error("copilot-stack: central or workspace config.json is invalid; workspace configuration was not prepared.");
   process.exit(1);
 }
 if (!central || Array.isArray(central) || typeof central !== "object" ||
@@ -392,31 +395,27 @@ if (!central || Array.isArray(central) || typeof central !== "object" ||
   console.error("copilot-stack: central and workspace config.json files must contain JSON objects.");
   process.exit(1);
 }
-for (const [key, value] of Object.entries(workspace)) {
-  if (!Object.prototype.hasOwnProperty.call(central, key)) central[key] = value;
-}
+// Central credentials and defaults override matching workspace properties.
+const merged = { ...workspace, ...central };
 const temporaryFile = path.join(
-  path.dirname(centralFile),
-  `.${path.basename(centralFile)}.${process.pid}.${Date.now()}.tmp`
+  path.dirname(workspaceFile),
+  `.${path.basename(workspaceFile)}.${process.pid}.${Date.now()}.tmp`
 );
 try {
-  fs.writeFileSync(temporaryFile, `${JSON.stringify(central, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(temporaryFile, centralFile);
+  fs.writeFileSync(temporaryFile, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryFile, workspaceFile);
 } catch (error) {
   try {
     fs.unlinkSync(temporaryFile);
   } catch {}
-  console.error(`copilot-stack: could not migrate workspace config.json: ${error.message}`);
+  console.error(`copilot-stack: could not prepare workspace config.json: ${error.message}`);
   process.exit(1);
 }
 NODE
-            rm -- "$workspace_config"
-        fi
-        ln -s -- "$central_config" "$workspace_config"
-    else
-        ln -s -- "$central_config" "$workspace_config"
     fi
 
+    [[ ! -e "$workspace_config" ]] || chmod 0600 -- "$workspace_config" ||
+        log_warning "could not restrict permissions on workspace Copilot configuration."
     [[ ! -e "$central_config" ]] || chmod 0600 -- "$central_config" ||
         log_warning "could not restrict permissions on central Copilot configuration."
     if [[ -n "$USER_HOME" ]]; then
@@ -424,9 +423,53 @@ NODE
             log_warning "could not set Copilot configuration directory ownership."
         [[ ! -e "$central_config" ]] || chown "$USER_NAME:$GROUP_NAME" "$central_config" ||
             log_warning "could not set central Copilot configuration ownership."
-        chown -h "$USER_NAME:$GROUP_NAME" "$workspace_config" ||
-            log_warning "could not set central Copilot configuration link ownership."
+        [[ ! -e "$workspace_config" ]] || chown "$USER_NAME:$GROUP_NAME" "$workspace_config" ||
+            log_warning "could not set workspace Copilot configuration ownership."
     fi
+}
+
+link_central_config_for_login() {
+    local central_config="$STACK_CONFIG_DIR/config.json"
+    local workspace_config="$COPILOT_CONFIG_DIR/config.json"
+
+    prepare_stack_config_directory || return 1
+    mkdir -p -- "$COPILOT_CONFIG_DIR"
+    if [[ -L "$workspace_config" ]]; then
+        [[ "$(readlink -- "$workspace_config")" == "$central_config" ]] || {
+            fail "$workspace_config links to an unexpected location."
+            return 1
+        }
+    fi
+    COPILOT_CENTRAL_CONFIG="$central_config" node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
+let config = {};
+try {
+  if (fs.existsSync(centralFile)) config = JSON.parse(fs.readFileSync(centralFile, "utf8"));
+  if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("not an object");
+} catch {
+  console.error("copilot-stack: central config.json is invalid; central login configuration was not prepared.");
+  process.exit(1);
+}
+// Shared credentials need only trust the mounted Docker workspace.
+config.trusted_folders = ["/workspace"];
+delete config.trustedFolders;
+const temporaryFile = path.join(path.dirname(centralFile), `.${path.basename(centralFile)}.${process.pid}.${Date.now()}.tmp`);
+try {
+  fs.writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryFile, centralFile);
+} catch (error) {
+  try { fs.unlinkSync(temporaryFile); } catch {}
+  console.error(`copilot-stack: could not prepare central login configuration: ${error.message}`);
+  process.exit(1);
+}
+NODE
+    if [[ ! -L "$workspace_config" ]]; then
+        rm -f -- "$workspace_config"
+        ln -s -- "$central_config" "$workspace_config"
+    fi
+    chmod 0600 -- "$central_config" || log_warning "could not restrict permissions on central Copilot configuration."
 }
 
 
@@ -574,122 +617,6 @@ reset_auth() {
     printf '%s\n' "Copilot stack authentication configuration removed."
 }
 
-configure_workspace_trust() {
-    local trust_setting=${COPILOT_AUTO_TRUST_WORKSPACE:-1}
-    local config_file="$STACK_CONFIG_DIR/config.json"
-
-    case "$trust_setting" in
-        0 | false | FALSE) return 0 ;;
-        1 | true | TRUE) ;;
-        *)
-            fail "COPILOT_AUTO_TRUST_WORKSPACE must be 0 or 1."
-            return 1
-            ;;
-    esac
-
-    prepare_stack_config_directory || return 1
-    COPILOT_TRUST_CONFIG_FILE="$config_file" COPILOT_TRUST_DIRECTORY="$PWD" node <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const configFile = process.env.COPILOT_TRUST_CONFIG_FILE;
-const trustedDirectory = process.env.COPILOT_TRUST_DIRECTORY;
-let config = {};
-
-function parseJsonc(content) {
-  let output = "";
-  let inString = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index];
-    const next = content[index + 1];
-    if (lineComment) {
-      if (character === "\n" || character === "\r") {
-        lineComment = false;
-        output += character;
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (character === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      } else if (character === "\n" || character === "\r") {
-        output += character;
-      }
-      continue;
-    }
-    if (inString) {
-      output += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      output += character;
-    } else if (character === "/" && next === "/") {
-      lineComment = true;
-      index += 1;
-    } else if (character === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-    } else {
-      output += character;
-    }
-  }
-
-  return JSON.parse(output.replace(/,\s*([}\]])/g, "$1"));
-}
-
-if (fs.existsSync(configFile)) {
-  try {
-    config = parseJsonc(fs.readFileSync(configFile, "utf8"));
-  } catch {
-    console.error("copilot-stack: shared Copilot configuration is invalid JSON; it was not modified.");
-    process.exit(1);
-  }
-  if (config === null || Array.isArray(config) || typeof config !== "object") {
-    console.error("copilot-stack: shared Copilot configuration must be a JSON object; it was not modified.");
-    process.exit(1);
-  }
-}
-
-const trustKey = Object.prototype.hasOwnProperty.call(config, "trusted_folders")
-  ? "trusted_folders"
-  : Object.prototype.hasOwnProperty.call(config, "trustedFolders")
-    ? "trustedFolders"
-    : "trusted_folders";
-if (Object.prototype.hasOwnProperty.call(config, trustKey) && !Array.isArray(config[trustKey])) {
-  console.error("copilot-stack: shared trusted-folder configuration must be an array; it was not modified.");
-  process.exit(1);
-}
-
-const trustedFolders = config[trustKey] || [];
-if (!trustedFolders.includes(trustedDirectory)) {
-  config[trustKey] = [...trustedFolders, trustedDirectory];
-  const temporaryFile = path.join(
-    path.dirname(configFile),
-    `.${path.basename(configFile)}.${process.pid}.${Date.now()}.tmp`
-  );
-  try {
-    fs.writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temporaryFile, configFile);
-  } catch (error) {
-    try {
-      fs.unlinkSync(temporaryFile);
-    } catch {}
-    console.error(`copilot-stack: could not update shared trust configuration: ${error.message}`);
-    process.exit(1);
-  }
-}
-NODE
-}
-
 setup_container_user() {
     local existing_group
     local existing_user
@@ -747,7 +674,6 @@ main() {
     if ! setup_container_user; then
         setup_central_config_link
         load_auth
-        configure_workspace_trust
         exec "$@"
     fi
 
@@ -769,11 +695,11 @@ main() {
             ;;
     esac
 
-    configure_workspace_trust
     chown -R "$USER_NAME:$GROUP_NAME" "$COPILOT_CONFIG_DIR"
 
     if is_copilot_login_command "$@"; then
         clear_stack_auth_environment
+        link_central_config_for_login
         run_as_container_user "$@"
     fi
 

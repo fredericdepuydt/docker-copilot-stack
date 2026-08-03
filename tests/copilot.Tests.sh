@@ -413,49 +413,44 @@ fi
 WORKSPACE="$ENTRYPOINT_TEST_ROOT/workspace"
 COPILOT_CONFIG_DIR="$WORKSPACE/.copilot"
 mkdir -p -- "$COPILOT_CONFIG_DIR" "$STACK_CONFIG_DIR"
-printf '{"custom":"keep","trusted_folders":["/already"]}\n' >"$STACK_CONFIG_DIR/config.json"
-printf '{"workspaceLegacy":"migrated","custom":"workspace-does-not-overwrite-central"}\n' >"$COPILOT_CONFIG_DIR/config.json"
+printf '{"central":"forced","trusted_folders":["/workspace"]}\n' >"$STACK_CONFIG_DIR/config.json"
+printf '{"workspaceOnly":"preserved","central":"workspace-value","trusted_folders":["/workspace/project"]}\n' >"$COPILOT_CONFIG_DIR/config.json"
 setup_central_config_link
-[[ -L "$COPILOT_CONFIG_DIR/config.json" ]]
-[[ "$(readlink -- "$COPILOT_CONFIG_DIR/config.json")" == "$STACK_CONFIG_DIR/config.json" ]]
+[[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
 printf 'workspace-state' >"$COPILOT_CONFIG_DIR/session-store.db"
-COPILOT_AUTO_TRUST_WORKSPACE=1
-(
-    cd -- "$WORKSPACE"
-    configure_workspace_trust
-)
 node -e '
 const fs = require("fs");
-const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (value.custom !== "keep" || value.workspaceLegacy !== "migrated" || !value.trusted_folders.includes(process.argv[2])) process.exit(1);
-' "$COPILOT_CONFIG_DIR/config.json" "$WORKSPACE"
+const central = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const workspace = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (central.central !== "forced" || central.workspaceOnly || central.trusted_folders[0] !== "/workspace") process.exit(1);
+if (workspace.central !== "forced" || workspace.workspaceOnly !== "preserved" || workspace.trusted_folders[0] !== "/workspace") process.exit(1);
+' "$STACK_CONFIG_DIR/config.json" "$COPILOT_CONFIG_DIR/config.json"
 [[ "$(<"$COPILOT_CONFIG_DIR/session-store.db")" == workspace-state ]]
 
 SECOND_WORKSPACE="$ENTRYPOINT_TEST_ROOT/second-workspace"
 COPILOT_CONFIG_DIR="$SECOND_WORKSPACE/.copilot"
 mkdir -p -- "$COPILOT_CONFIG_DIR"
+printf '{"secondWorkspaceOnly":"preserved","central":"old"}\n' >"$COPILOT_CONFIG_DIR/config.json"
 printf 'second-workspace-state' >"$COPILOT_CONFIG_DIR/session-store.db"
 setup_central_config_link
-[[ -L "$COPILOT_CONFIG_DIR/config.json" ]]
-[[ "$(readlink -- "$COPILOT_CONFIG_DIR/config.json")" == "$STACK_CONFIG_DIR/config.json" ]]
+[[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
 [[ "$(<"$COPILOT_CONFIG_DIR/session-store.db")" == second-workspace-state ]]
 node -e '
 const fs = require("fs");
 const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (value.workspaceLegacy !== "migrated" || !value.trusted_folders.includes(process.argv[2])) process.exit(1);
-' "$COPILOT_CONFIG_DIR/config.json" "$WORKSPACE"
+if (value.central !== "forced" || value.secondWorkspaceOnly !== "preserved" || value.trusted_folders[0] !== "/workspace") process.exit(1);
+' "$COPILOT_CONFIG_DIR/config.json"
 
-printf '{ invalid json\n' >"$STACK_CONFIG_DIR/config.json"
-if (
-    cd -- "$WORKSPACE"
-    configure_workspace_trust
-); then
-    echo "Invalid shared Copilot JSON was overwritten." >&2
-    exit 1
-fi
-grep -Fqx '{ invalid json' "$STACK_CONFIG_DIR/config.json"
+link_central_config_for_login
 [[ -L "$COPILOT_CONFIG_DIR/config.json" ]]
-[[ -L "$WORKSPACE/.copilot/config.json" ]]
+[[ "$(readlink -- "$COPILOT_CONFIG_DIR/config.json")" == "$STACK_CONFIG_DIR/config.json" ]]
+node -e '
+const fs = require("fs");
+const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (value.trusted_folders.length !== 1 || value.trusted_folders[0] !== "/workspace") process.exit(1);
+' "$STACK_CONFIG_DIR/config.json"
+setup_central_config_link
+[[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
 
 write_values github "" "" "" "" false
 printf 'keep' >"$WORKSPACE/.copilot-state"

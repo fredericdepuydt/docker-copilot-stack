@@ -155,7 +155,9 @@ the Compose environment defaults.
 
 ### Workspace-scoped state and central login
 
-`COPILOT_CONFIG_DIR` points to `Workspace/.copilot` inside the mounted Root. Sessions, logs, command history, and other workspace-related Copilot state therefore remain local to the selected workspace. Its `config.json` is a symbolic link to the central `config/copilot/config.json`, so GitHub login, settings, and trusted folders are shared without centralizing workspace session files. On first use, properties from an existing workspace `config.json` are merged into the central file without replacing central values, then the workspace file becomes the symlink.
+`COPILOT_CONFIG_DIR` points to `Workspace/.copilot` inside the mounted Root, so sessions, logs, command history, settings, trusted folders, and other CLI state remain local to the selected workspace. On normal startup, central `config/copilot/config.json` values are merged into the workspace `config.json` and override matching workspace values; workspace-only values remain local. The central file is not modified during normal launches.
+
+Only `copilot login` temporarily links the workspace `config.json` to `config/copilot/config.json`, allowing the official CLI login flow to update shared GitHub credentials. The central file is seeded with exactly `trusted_folders: ["/workspace"]`; workspace-specific trust remains local.
 
 The container working directory is set to Workspace, so Copilot discovers the project-specific `AGENTS.md` relative to that directory. The launcher does not copy `AGENTS.md` to Root. Instructions closer to files in shared-library directories can still apply through Copilot's normal hierarchical instruction discovery.
 
@@ -200,7 +202,8 @@ Authentication is persistent but deliberately separate from workspace state:
 | State | Host location | Container location |
 | --- | --- | --- |
 | Workspace sessions, logs, command history, and other CLI state | `<selected workspace>/.copilot` | `COPILOT_CONFIG_DIR` |
-| Shared GitHub login, settings, and trusted folders | `config/copilot/config.json` | `COPILOT_CONFIG_DIR/config.json` (symlink target) |
+| Shared GitHub login | `config/copilot/config.json` | Temporary `COPILOT_CONFIG_DIR/config.json` symlink during `copilot login` only |
+| Workspace settings and trusted folders | `<selected workspace>/.copilot/config.json` | `COPILOT_CONFIG_DIR/config.json` |
 | Stack mode and BYOK settings | `config/copilot/auth.env` | `/copilot-stack-config/auth.env` |
 
 On the first normal container start, when no `auth.env` exists, the entrypoint
@@ -287,13 +290,9 @@ loaded automatically. The mount is configured relative to this repository, so
 both direct Compose and launchers invoked from another directory use the same
 stack configuration.
 
-#### Automatic workspace trust
+#### Workspace trust
 
-Automatic trust is enabled by default. The selected container working
-directory is added to the central `config/copilot/config.json` through the workspace symlink before startup.
-Existing JSON properties are preserved and updates are atomic. Invalid JSON is
-reported and left untouched. Set `COPILOT_AUTO_TRUST_WORKSPACE=0` before
-starting the launcher or Compose to disable it.
+The stack no longer changes trusted folders during normal startup. Each workspace manages trust in its local `.copilot/config.json`. The central login configuration contains only `trusted_folders: ["/workspace"]`, which is sufficient while running the official `copilot login` command.
 
 #### Security limitations
 
