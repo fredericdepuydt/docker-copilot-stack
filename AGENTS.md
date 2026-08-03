@@ -25,7 +25,7 @@ This repository builds and runs the GitHub Copilot CLI in Docker. Use this file 
 - Keep changes surgical and directly related to the request.
 - Preserve non-root execution flow (`entrypoint.sh` should continue to `exec gosu "$USER_NAME" "$@"`).
 - Preserve UID/GID mapping semantics (`PUID`, `PGID`) and existing fallback behavior.
-- Preserve `COPILOT_CONFIG_DIR` behavior and workspace-scoped `.copilot` state.
+- Preserve workspace-scoped `COPILOT_CONFIG_DIR` state and the central `config/copilot/config.json` login/settings symlink target.
 - If Docker/runtime behavior changes, update `README.md` in the same change.
 - Do not commit secrets, tokens, or private certificates.
 

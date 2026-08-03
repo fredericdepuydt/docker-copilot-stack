@@ -303,40 +303,67 @@ COPILOT_ENTRYPOINT_LIBRARY_ONLY=1 source "$ENTRYPOINT"
 
 STACK_CONFIG_DIR="$ENTRYPOINT_TEST_ROOT/stack-config"
 AUTH_CONFIG_FILE="$STACK_CONFIG_DIR/auth.env"
+COPILOT_CONFIG_DIR="$ENTRYPOINT_TEST_ROOT/default-workspace/.copilot"
 USER_HOME=
 
 write_values() {
     AUTH_MODE=$1
-    AUTH_GITHUB_TOKEN=$2
-    AUTH_PROVIDER_TYPE=$3
-    AUTH_PROVIDER_BASE_URL=$4
-    AUTH_PROVIDER_API_KEY=$5
-    AUTH_MODEL=$6
-    AUTH_OFFLINE=$7
+    AUTH_PROVIDER_TYPE=$2
+    AUTH_PROVIDER_BASE_URL=$3
+    AUTH_PROVIDER_API_KEY=$4
+    AUTH_MODEL=$5
+    AUTH_OFFLINE=$6
     write_auth_config
 }
 
-write_values github github_pat_test "" "" "" "" false
+write_values github "" "" "" "" false
 clear_stack_auth_environment
 load_auth >/dev/null
-[[ "${COPILOT_GITHUB_TOKEN:-}" == github_pat_test ]]
-[[ ! -v COPILOT_PROVIDER_TYPE && ! -v COPILOT_PROVIDER_BASE_URL && ! -v COPILOT_OFFLINE ]]
+[[ ! -v COPILOT_GITHUB_TOKEN && ! -v COPILOT_PROVIDER_TYPE && ! -v COPILOT_PROVIDER_BASE_URL && ! -v COPILOT_OFFLINE ]]
+[[ "$(<"$AUTH_CONFIG_FILE")" != *COPILOT_GITHUB_TOKEN* ]]
+[[ "$COPILOT_CONFIG_DIR" != "$STACK_CONFIG_DIR" ]]
+printf 'COPILOT_STACK_AUTH_MODE=github\nCOPILOT_PROVIDER_TYPE=openai\nCOPILOT_PROVIDER_BASE_URL=https://stale.example.test/v1\n' >"$STACK_CONFIG_DIR/github-stale.env"
+read_auth_config "$STACK_CONFIG_DIR/github-stale.env"
+validate_auth_config
+[[ -z "$AUTH_PROVIDER_TYPE" && -z "$AUTH_PROVIDER_BASE_URL" && "$AUTH_OFFLINE" == false ]]
+printf 'COPILOT_STACK_AUTH_MODE=github\n' >"$STACK_CONFIG_DIR/github-minimal.env"
+read_auth_config "$STACK_CONFIG_DIR/github-minimal.env"
+validate_auth_config
+[[ "$AUTH_MODE" == github && "$AUTH_OFFLINE" == false ]]
+is_copilot_login_command copilot --allow-all-paths --yolo login
+is_copilot_login_command copilot --model auto login
+if is_copilot_login_command copilot --allow-all-paths --yolo chat; then
+    echo "A non-login Copilot command bypassed stack authentication." >&2
+    exit 1
+fi
+if is_copilot_login_command copilot --prompt login; then
+    echo "A prompt value bypassed stack authentication." >&2
+    exit 1
+fi
+if is_copilot_login_command copilot --prompt=login; then
+    echo "An inline prompt value bypassed stack authentication." >&2
+    exit 1
+fi
+printf 'COPILOT_STACK_AUTH_MODE=github\nCOPILOT_GITHUB_TOKEN=legacy-token\nCOPILOT_PROVIDER_TYPE=\nCOPILOT_PROVIDER_BASE_URL=\nCOPILOT_PROVIDER_API_KEY=\nCOPILOT_MODEL=\nCOPILOT_OFFLINE=false\n' >"$STACK_CONFIG_DIR/legacy.env"
+read_auth_config "$STACK_CONFIG_DIR/legacy.env"
+write_values github "" "" "" "" false
+[[ "$(<"$AUTH_CONFIG_FILE")" != *COPILOT_GITHUB_TOKEN* ]]
 
-write_values byok "" openai http://localhost:11434 "" llama3 true
+write_values byok openai http://localhost:11434 "" llama3 true
 clear_stack_auth_environment
 load_auth >/dev/null
 [[ ! -v COPILOT_GITHUB_TOKEN && "${COPILOT_PROVIDER_TYPE:-}" == openai ]]
 [[ "${COPILOT_OFFLINE:-}" == true ]]
 
-write_values hybrid github_pat_test openai https://litellm.example.test/v1 provider-key model-alias false
+write_values hybrid openai https://litellm.example.test/v1 provider-key model-alias false
 clear_stack_auth_environment
 load_auth >/dev/null
-[[ "${COPILOT_GITHUB_TOKEN:-}" == github_pat_test ]]
+[[ ! -v COPILOT_GITHUB_TOKEN ]]
 [[ "${COPILOT_PROVIDER_API_KEY:-}" == provider-key ]]
 [[ ! -v COPILOT_OFFLINE ]]
 
 summary=$(show_auth)
-[[ "$summary" != *github_pat_test* && "$summary" != *provider-key* ]]
+[[ "$summary" != *provider-key* ]]
 
 before_failure=$(<"$AUTH_CONFIG_FILE")
 AUTH_OFFLINE=true
@@ -348,7 +375,6 @@ fi
 
 for invalid_mode in invalid byok; do
     AUTH_MODE=$invalid_mode
-    AUTH_GITHUB_TOKEN=
     AUTH_PROVIDER_TYPE=
     AUTH_PROVIDER_BASE_URL=
     AUTH_PROVIDER_API_KEY=
@@ -366,7 +392,6 @@ for invalid_mode in invalid byok; do
 done
 
 AUTH_MODE=byok
-AUTH_GITHUB_TOKEN=
 AUTH_PROVIDER_TYPE=openai
 AUTH_PROVIDER_BASE_URL=
 AUTH_PROVIDER_API_KEY=
@@ -384,7 +409,6 @@ if read_auth_config "$STACK_CONFIG_DIR/cr.env"; then
 fi
 
 AUTH_MODE=$'github\ninvalid'
-AUTH_GITHUB_TOKEN=github_pat_test
 AUTH_PROVIDER_TYPE=
 AUTH_PROVIDER_BASE_URL=
 AUTH_PROVIDER_API_KEY=
@@ -396,35 +420,52 @@ if validate_auth_config; then
 fi
 
 WORKSPACE="$ENTRYPOINT_TEST_ROOT/workspace"
-mkdir -p -- "$WORKSPACE/.copilot"
-printf '{"custom":"keep","trusted_folders":["/already"]}\n' >"$WORKSPACE/.copilot/config.json"
 COPILOT_CONFIG_DIR="$WORKSPACE/.copilot"
-COPILOT_AUTO_TRUST_WORKSPACE=1
-(
-    cd -- "$WORKSPACE"
-    configure_workspace_trust
-)
+mkdir -p -- "$COPILOT_CONFIG_DIR" "$STACK_CONFIG_DIR"
+printf '{"central":"forced","trusted_folders":["/workspace"]}\n' >"$STACK_CONFIG_DIR/config.json"
+printf '{"workspaceOnly":"preserved","central":"workspace-value","trusted_folders":["/workspace/project"]}\n' >"$COPILOT_CONFIG_DIR/config.json"
+setup_central_config_link
+[[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
+printf 'workspace-state' >"$COPILOT_CONFIG_DIR/session-store.db"
+node -e '
+const fs = require("fs");
+const central = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const workspace = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+if (central.central !== "forced" || central.workspaceOnly || central.trusted_folders[0] !== "/workspace") process.exit(1);
+if (workspace.central !== "forced" || workspace.workspaceOnly !== "preserved" || workspace.trusted_folders[0] !== "/workspace") process.exit(1);
+' "$STACK_CONFIG_DIR/config.json" "$COPILOT_CONFIG_DIR/config.json"
+[[ "$(<"$COPILOT_CONFIG_DIR/session-store.db")" == workspace-state ]]
+
+SECOND_WORKSPACE="$ENTRYPOINT_TEST_ROOT/second-workspace"
+COPILOT_CONFIG_DIR="$SECOND_WORKSPACE/.copilot"
+mkdir -p -- "$COPILOT_CONFIG_DIR"
+printf '{"secondWorkspaceOnly":"preserved","central":"old"}\n' >"$COPILOT_CONFIG_DIR/config.json"
+printf 'second-workspace-state' >"$COPILOT_CONFIG_DIR/session-store.db"
+setup_central_config_link
+[[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
+[[ "$(<"$COPILOT_CONFIG_DIR/session-store.db")" == second-workspace-state ]]
 node -e '
 const fs = require("fs");
 const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (value.custom !== "keep" || !value.trusted_folders.includes(process.argv[2])) process.exit(1);
-' "$WORKSPACE/.copilot/config.json" "$WORKSPACE"
+if (value.central !== "forced" || value.secondWorkspaceOnly !== "preserved" || value.trusted_folders[0] !== "/workspace") process.exit(1);
+' "$COPILOT_CONFIG_DIR/config.json"
 
-printf '{ invalid json\n' >"$WORKSPACE/.copilot/config.json"
-if (
-    cd -- "$WORKSPACE"
-    configure_workspace_trust
-); then
-    echo "Invalid workspace Copilot JSON was overwritten." >&2
-    exit 1
-fi
-grep -Fqx '{ invalid json' "$WORKSPACE/.copilot/config.json"
+link_central_config_for_login
+[[ -L "$COPILOT_CONFIG_DIR/config.json" ]]
+[[ "$(readlink -- "$COPILOT_CONFIG_DIR/config.json")" == "$STACK_CONFIG_DIR/config.json" ]]
+node -e '
+const fs = require("fs");
+const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (value.trusted_folders.length !== 1 || value.trusted_folders[0] !== "/workspace") process.exit(1);
+' "$STACK_CONFIG_DIR/config.json"
+setup_central_config_link
+[[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
 
-write_values github github_pat_test "" "" "" "" false
-printf 'keep' >"$WORKSPACE/.copilot/state"
+write_values github "" "" "" "" false
+printf 'keep' >"$WORKSPACE/.copilot-state"
 reset_auth --yes >/dev/null
 [[ ! -e "$AUTH_CONFIG_FILE" ]] || exit 1
-[[ -f "$WORKSPACE/.copilot/state" ]]
+[[ -f "$WORKSPACE/.copilot-state" ]]
 
 [[ -x "$ENTRYPOINT" ]]
 if grep -q $'\r' "$ENTRYPOINT"; then

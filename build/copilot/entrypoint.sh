@@ -10,7 +10,6 @@ GROUP_NAME=appuser_group
 USER_HOME=
 COPILOT_CONFIG_DIR=${COPILOT_CONFIG_DIR:-/workspace/.copilot}
 AUTH_MODE=
-AUTH_GITHUB_TOKEN=
 AUTH_PROVIDER_TYPE=
 AUTH_PROVIDER_BASE_URL=
 AUTH_PROVIDER_API_KEY=
@@ -75,7 +74,6 @@ try {
 
 reset_auth_values() {
     AUTH_MODE=
-    AUTH_GITHUB_TOKEN=
     AUTH_PROVIDER_TYPE=
     AUTH_PROVIDER_BASE_URL=
     AUTH_PROVIDER_API_KEY=
@@ -88,7 +86,6 @@ get_config_value() {
 
     case "$key" in
         COPILOT_STACK_AUTH_MODE) printf '%s' "$AUTH_MODE" ;;
-        COPILOT_GITHUB_TOKEN) printf '%s' "$AUTH_GITHUB_TOKEN" ;;
         COPILOT_PROVIDER_TYPE) printf '%s' "$AUTH_PROVIDER_TYPE" ;;
         COPILOT_PROVIDER_BASE_URL) printf '%s' "$AUTH_PROVIDER_BASE_URL" ;;
         COPILOT_PROVIDER_API_KEY) printf '%s' "$AUTH_PROVIDER_API_KEY" ;;
@@ -129,7 +126,9 @@ read_auth_config() {
 
         case "$key" in
             COPILOT_STACK_AUTH_MODE) AUTH_MODE=$value ;;
-            COPILOT_GITHUB_TOKEN) AUTH_GITHUB_TOKEN=$value ;;
+            COPILOT_GITHUB_TOKEN)
+                log_warning "ignoring obsolete GitHub token setting; run copilot login to store GitHub credentials in config.json."
+                ;;
             COPILOT_PROVIDER_TYPE) AUTH_PROVIDER_TYPE=$value ;;
             COPILOT_PROVIDER_BASE_URL) AUTH_PROVIDER_BASE_URL=$value ;;
             COPILOT_PROVIDER_API_KEY) AUTH_PROVIDER_API_KEY=$value ;;
@@ -142,24 +141,30 @@ read_auth_config() {
         esac
     done <"$config_file"
 
-    for required_key in \
-        COPILOT_STACK_AUTH_MODE \
-        COPILOT_GITHUB_TOKEN \
-        COPILOT_PROVIDER_TYPE \
-        COPILOT_PROVIDER_BASE_URL \
-        COPILOT_PROVIDER_API_KEY \
-        COPILOT_MODEL \
-        COPILOT_OFFLINE; do
+    for required_key in COPILOT_STACK_AUTH_MODE; do
         if [[ -z ${seen[$required_key]+present} ]]; then
             fail "Authentication configuration is missing '$required_key'."
             return 1
         fi
     done
+
+    if [[ "$AUTH_MODE" == byok || "$AUTH_MODE" == hybrid ]]; then
+        for required_key in \
+            COPILOT_PROVIDER_TYPE \
+            COPILOT_PROVIDER_BASE_URL \
+            COPILOT_PROVIDER_API_KEY \
+            COPILOT_MODEL \
+            COPILOT_OFFLINE; do
+            if [[ -z ${seen[$required_key]+present} ]]; then
+                fail "Authentication configuration is missing '$required_key'."
+                return 1
+            fi
+        done
+    fi
 }
 
 validate_auth_config() {
     validate_single_line_value "Authentication mode" "$AUTH_MODE" || return 1
-    validate_single_line_value "GitHub token" "$AUTH_GITHUB_TOKEN" || return 1
     validate_single_line_value "Provider type" "$AUTH_PROVIDER_TYPE" || return 1
     validate_single_line_value "Provider URL" "$AUTH_PROVIDER_BASE_URL" || return 1
     validate_single_line_value "Provider API key" "$AUTH_PROVIDER_API_KEY" || return 1
@@ -168,20 +173,11 @@ validate_auth_config() {
 
     case "$AUTH_MODE" in
         github)
-            [[ -n "$AUTH_GITHUB_TOKEN" ]] || {
-                fail "GitHub authentication requires a GitHub token."
-                return 1
-            }
-            [[ -z "$AUTH_PROVIDER_TYPE" && -z "$AUTH_PROVIDER_BASE_URL" &&
-                -z "$AUTH_PROVIDER_API_KEY" && -z "$AUTH_MODEL" ]] ||
-                {
-                    fail "GitHub authentication must not include BYOK provider settings."
-                    return 1
-                }
-            [[ "$AUTH_OFFLINE" == false ]] || {
-                fail "GitHub authentication cannot enable offline mode."
-                return 1
-            }
+            AUTH_PROVIDER_TYPE=
+            AUTH_PROVIDER_BASE_URL=
+            AUTH_PROVIDER_API_KEY=
+            AUTH_MODEL=
+            AUTH_OFFLINE=false
             ;;
         byok | hybrid)
             [[ "$AUTH_PROVIDER_TYPE" == openai ||
@@ -207,19 +203,11 @@ validate_auth_config() {
                 }
             fi
             if [[ "$AUTH_MODE" == hybrid ]]; then
-                [[ -n "$AUTH_GITHUB_TOKEN" ]] || {
-                    fail "Hybrid authentication requires a GitHub token."
-                    return 1
-                }
                 [[ "$AUTH_OFFLINE" == false ]] || {
                     fail "Hybrid authentication cannot enable offline mode."
                     return 1
                 }
             else
-                [[ -z "$AUTH_GITHUB_TOKEN" ]] || {
-                    fail "BYOK-only authentication must not include a GitHub token."
-                    return 1
-                }
                 [[ "$AUTH_OFFLINE" == true || "$AUTH_OFFLINE" == false ]] ||
                     {
                         fail "Offline setting must be true or false."
@@ -255,7 +243,6 @@ write_auth_config() {
 
     if ! {
         printf 'COPILOT_STACK_AUTH_MODE=%s\n' "$AUTH_MODE"
-        printf 'COPILOT_GITHUB_TOKEN=%s\n' "$AUTH_GITHUB_TOKEN"
         printf 'COPILOT_PROVIDER_TYPE=%s\n' "$AUTH_PROVIDER_TYPE"
         printf 'COPILOT_PROVIDER_BASE_URL=%s\n' "$AUTH_PROVIDER_BASE_URL"
         printf 'COPILOT_PROVIDER_API_KEY=%s\n' "$AUTH_PROVIDER_API_KEY"
@@ -361,6 +348,131 @@ configure_byok_values() {
     fi
 }
 
+configure_github_login() {
+    printf '%s\n' "Starting GitHub Copilot sign-in. Copilot CLI stores config.json centrally in $STACK_CONFIG_DIR."
+    link_central_config_for_login || return 1
+    if [[ -n "$USER_HOME" ]]; then
+        gosu "$USER_NAME" copilot login --device-code
+    else
+        copilot login --device-code
+    fi
+}
+
+setup_central_config_link() {
+    local central_config="$STACK_CONFIG_DIR/config.json"
+    local workspace_config="$COPILOT_CONFIG_DIR/config.json"
+
+    prepare_stack_config_directory || return 1
+    mkdir -p -- "$COPILOT_CONFIG_DIR"
+    if [[ -L "$workspace_config" ]]; then
+        [[ "$(readlink -- "$workspace_config")" == "$central_config" ]] || {
+            fail "$workspace_config links to an unexpected location."
+            return 1
+        }
+        rm -- "$workspace_config"
+    fi
+
+    if [[ -e "$central_config" ]]; then
+        COPILOT_CENTRAL_CONFIG="$central_config" COPILOT_WORKSPACE_CONFIG="$workspace_config" node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
+const workspaceFile = process.env.COPILOT_WORKSPACE_CONFIG;
+let central;
+let workspace;
+try {
+  central = JSON.parse(fs.readFileSync(centralFile, "utf8"));
+  workspace = fs.existsSync(workspaceFile)
+    ? JSON.parse(fs.readFileSync(workspaceFile, "utf8"))
+    : {};
+} catch {
+  console.error("copilot-stack: central or workspace config.json is invalid; workspace configuration was not prepared.");
+  process.exit(1);
+}
+if (!central || Array.isArray(central) || typeof central !== "object" ||
+    !workspace || Array.isArray(workspace) || typeof workspace !== "object") {
+  console.error("copilot-stack: central and workspace config.json files must contain JSON objects.");
+  process.exit(1);
+}
+// Central credentials and defaults override matching workspace properties.
+const merged = { ...workspace, ...central };
+const temporaryFile = path.join(
+  path.dirname(workspaceFile),
+  `.${path.basename(workspaceFile)}.${process.pid}.${Date.now()}.tmp`
+);
+try {
+  fs.writeFileSync(temporaryFile, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryFile, workspaceFile);
+} catch (error) {
+  try {
+    fs.unlinkSync(temporaryFile);
+  } catch {}
+  console.error(`copilot-stack: could not prepare workspace config.json: ${error.message}`);
+  process.exit(1);
+}
+NODE
+    fi
+
+    [[ ! -e "$workspace_config" ]] || chmod 0600 -- "$workspace_config" ||
+        log_warning "could not restrict permissions on workspace Copilot configuration."
+    [[ ! -e "$central_config" ]] || chmod 0600 -- "$central_config" ||
+        log_warning "could not restrict permissions on central Copilot configuration."
+    if [[ -n "$USER_HOME" ]]; then
+        chown "$USER_NAME:$GROUP_NAME" "$STACK_CONFIG_DIR" "$COPILOT_CONFIG_DIR" ||
+            log_warning "could not set Copilot configuration directory ownership."
+        [[ ! -e "$central_config" ]] || chown "$USER_NAME:$GROUP_NAME" "$central_config" ||
+            log_warning "could not set central Copilot configuration ownership."
+        [[ ! -e "$workspace_config" ]] || chown "$USER_NAME:$GROUP_NAME" "$workspace_config" ||
+            log_warning "could not set workspace Copilot configuration ownership."
+    fi
+}
+
+link_central_config_for_login() {
+    local central_config="$STACK_CONFIG_DIR/config.json"
+    local workspace_config="$COPILOT_CONFIG_DIR/config.json"
+
+    prepare_stack_config_directory || return 1
+    mkdir -p -- "$COPILOT_CONFIG_DIR"
+    if [[ -L "$workspace_config" ]]; then
+        [[ "$(readlink -- "$workspace_config")" == "$central_config" ]] || {
+            fail "$workspace_config links to an unexpected location."
+            return 1
+        }
+    fi
+    COPILOT_CENTRAL_CONFIG="$central_config" node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
+let config = {};
+try {
+  if (fs.existsSync(centralFile)) config = JSON.parse(fs.readFileSync(centralFile, "utf8"));
+  if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("not an object");
+} catch {
+  console.error("copilot-stack: central config.json is invalid; central login configuration was not prepared.");
+  process.exit(1);
+}
+// Shared credentials need only trust the mounted Docker workspace.
+config.trusted_folders = ["/workspace"];
+delete config.trustedFolders;
+const temporaryFile = path.join(path.dirname(centralFile), `.${path.basename(centralFile)}.${process.pid}.${Date.now()}.tmp`);
+try {
+  fs.writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporaryFile, centralFile);
+} catch (error) {
+  try { fs.unlinkSync(temporaryFile); } catch {}
+  console.error(`copilot-stack: could not prepare central login configuration: ${error.message}`);
+  process.exit(1);
+}
+NODE
+    if [[ ! -L "$workspace_config" ]]; then
+        rm -f -- "$workspace_config"
+        ln -s -- "$central_config" "$workspace_config"
+    fi
+    chmod 0600 -- "$central_config" || log_warning "could not restrict permissions on central Copilot configuration."
+}
+
+
 configure_auth() {
     local selection
 
@@ -378,9 +490,8 @@ configure_auth() {
     case "$selection" in
         1)
             AUTH_MODE=github
-            printf '%s\n' "Use a user-owned fine-grained PAT with the Copilot Requests account permission, an OAuth token, or a GitHub App user-to-server token. Classic ghp_ PATs are not supported."
-            AUTH_GITHUB_TOKEN=$(read_secret_value "GitHub token: " required) || return 1
             AUTH_OFFLINE=false
+            configure_github_login || return 1
             ;;
         2)
             AUTH_MODE=byok
@@ -388,9 +499,8 @@ configure_auth() {
             ;;
         3)
             AUTH_MODE=hybrid
-            printf '%s\n' "Use a user-owned fine-grained PAT with the Copilot Requests account permission, an OAuth token, or a GitHub App user-to-server token. Classic ghp_ PATs are not supported."
-            AUTH_GITHUB_TOKEN=$(read_secret_value "GitHub token: " required) || return 1
             configure_byok_values || return 1
+            configure_github_login || return 1
             ;;
         *)
             fail "Authentication mode must be 1, 2, or 3."
@@ -454,7 +564,6 @@ load_auth() {
 
     case "$AUTH_MODE" in
         github)
-            export COPILOT_GITHUB_TOKEN="$AUTH_GITHUB_TOKEN"
             ;;
         byok)
             export COPILOT_PROVIDER_TYPE="$AUTH_PROVIDER_TYPE"
@@ -464,7 +573,6 @@ load_auth() {
             [[ "$AUTH_OFFLINE" == true ]] && export COPILOT_OFFLINE=true
             ;;
         hybrid)
-            export COPILOT_GITHUB_TOKEN="$AUTH_GITHUB_TOKEN"
             export COPILOT_PROVIDER_TYPE="$AUTH_PROVIDER_TYPE"
             export COPILOT_PROVIDER_BASE_URL="$AUTH_PROVIDER_BASE_URL"
             export COPILOT_PROVIDER_API_KEY="$AUTH_PROVIDER_API_KEY"
@@ -509,122 +617,6 @@ reset_auth() {
     printf '%s\n' "Copilot stack authentication configuration removed."
 }
 
-configure_workspace_trust() {
-    local trust_setting=${COPILOT_AUTO_TRUST_WORKSPACE:-1}
-    local config_file="$COPILOT_CONFIG_DIR/config.json"
-
-    case "$trust_setting" in
-        0 | false | FALSE) return 0 ;;
-        1 | true | TRUE) ;;
-        *)
-            fail "COPILOT_AUTO_TRUST_WORKSPACE must be 0 or 1."
-            return 1
-            ;;
-    esac
-
-    mkdir -p -- "$COPILOT_CONFIG_DIR"
-    COPILOT_TRUST_CONFIG_FILE="$config_file" COPILOT_TRUST_DIRECTORY="$PWD" node <<'NODE'
-const fs = require("fs");
-const path = require("path");
-
-const configFile = process.env.COPILOT_TRUST_CONFIG_FILE;
-const trustedDirectory = process.env.COPILOT_TRUST_DIRECTORY;
-let config = {};
-
-function parseJsonc(content) {
-  let output = "";
-  let inString = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-
-  for (let index = 0; index < content.length; index += 1) {
-    const character = content[index];
-    const next = content[index + 1];
-    if (lineComment) {
-      if (character === "\n" || character === "\r") {
-        lineComment = false;
-        output += character;
-      }
-      continue;
-    }
-    if (blockComment) {
-      if (character === "*" && next === "/") {
-        blockComment = false;
-        index += 1;
-      } else if (character === "\n" || character === "\r") {
-        output += character;
-      }
-      continue;
-    }
-    if (inString) {
-      output += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      output += character;
-    } else if (character === "/" && next === "/") {
-      lineComment = true;
-      index += 1;
-    } else if (character === "/" && next === "*") {
-      blockComment = true;
-      index += 1;
-    } else {
-      output += character;
-    }
-  }
-
-  return JSON.parse(output.replace(/,\s*([}\]])/g, "$1"));
-}
-
-if (fs.existsSync(configFile)) {
-  try {
-    config = parseJsonc(fs.readFileSync(configFile, "utf8"));
-  } catch {
-    console.error("copilot-stack: workspace Copilot configuration is invalid JSON; it was not modified.");
-    process.exit(1);
-  }
-  if (config === null || Array.isArray(config) || typeof config !== "object") {
-    console.error("copilot-stack: workspace Copilot configuration must be a JSON object; it was not modified.");
-    process.exit(1);
-  }
-}
-
-const trustKey = Object.prototype.hasOwnProperty.call(config, "trusted_folders")
-  ? "trusted_folders"
-  : Object.prototype.hasOwnProperty.call(config, "trustedFolders")
-    ? "trustedFolders"
-    : "trusted_folders";
-if (Object.prototype.hasOwnProperty.call(config, trustKey) && !Array.isArray(config[trustKey])) {
-  console.error("copilot-stack: workspace trusted-folder configuration must be an array; it was not modified.");
-  process.exit(1);
-}
-
-const trustedFolders = config[trustKey] || [];
-if (!trustedFolders.includes(trustedDirectory)) {
-  config[trustKey] = [...trustedFolders, trustedDirectory];
-  const temporaryFile = path.join(
-    path.dirname(configFile),
-    `.${path.basename(configFile)}.${process.pid}.${Date.now()}.tmp`
-  );
-  try {
-    fs.writeFileSync(temporaryFile, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temporaryFile, configFile);
-  } catch (error) {
-    try {
-      fs.unlinkSync(temporaryFile);
-    } catch {}
-    console.error(`copilot-stack: could not update workspace trust configuration: ${error.message}`);
-    process.exit(1);
-  }
-}
-NODE
-}
-
 setup_container_user() {
     local existing_group
     local existing_user
@@ -656,19 +648,49 @@ setup_container_user() {
         rm -rf -- "$USER_HOME/.copilot"
         ln -s "$COPILOT_CONFIG_DIR" "$USER_HOME/.copilot"
     fi
+    setup_central_config_link || return 1
     chown -R "$USER_NAME:$GROUP_NAME" "$USER_HOME" "$COPILOT_CONFIG_DIR"
+    chown -h "$USER_NAME:$GROUP_NAME" "$COPILOT_CONFIG_DIR/config.json"
 }
 
 run_as_container_user() {
     exec gosu "$USER_NAME" "$@"
 }
 
+is_copilot_login_command() {
+    local argument
+    local expects_value=false
+
+    [[ ${1:-} == copilot ]] || return 1
+    shift
+    for argument in "$@"; do
+        if [[ "$expects_value" == true ]]; then
+            expects_value=false
+            continue
+        fi
+        case "$argument" in
+            --) return 1 ;;
+            -C | -i | -n | -p | -r | --prompt | --add-dir | --add-github-mcp-tool | --add-github-mcp-toolset | \
+            --additional-mcp-config | --agent | --allow-tool | --allow-url | --attachment | --available-tools | \
+            --bash-env | --connect | --context | --deny-tool | --deny-url | --effort | --excluded-tools | \
+            --extension-sdk-path | --log-dir | --log-level | --max-ai-credits | --max-autopilot-continues | \
+            --mode | --model | --mouse | --output-format | --plugin-dir | --session-id | --share)
+                expects_value=true
+                ;;
+            -?* | --?*=*) ;;
+            login) return 0 ;;
+            *) return 1 ;;
+        esac
+    done
+    return 1
+}
+
 main() {
     clear_stack_auth_environment
 
     if ! setup_container_user; then
+        setup_central_config_link
         load_auth
-        configure_workspace_trust
         exec "$@"
     fi
 
@@ -690,9 +712,15 @@ main() {
             ;;
     esac
 
-    load_auth
-    configure_workspace_trust
     chown -R "$USER_NAME:$GROUP_NAME" "$COPILOT_CONFIG_DIR"
+
+    if is_copilot_login_command "$@"; then
+        clear_stack_auth_environment
+        link_central_config_for_login
+        run_as_container_user "$@" --device-code
+    fi
+
+    load_auth
     run_as_container_user "$@"
 }
 

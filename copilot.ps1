@@ -451,7 +451,7 @@ function Invoke-CopilotLauncher {
     Write-Host ("Host workspace:     {0}" -f $workspace)
     Write-Host ("Docker mount:       {0} -> /workspace" -f $root)
     Write-Host ("Container cwd:      {0}" -f $containerWorkspace)
-    Write-Host ("Copilot config:     {0}" -f $containerConfig)
+    Write-Host ("Copilot workspace state: {0}" -f $containerConfig)
     Write-Host ("Container name:     {0}" -f $containerName)
     Write-Host "Copilot mode:       YOLO, all paths allowed"
 

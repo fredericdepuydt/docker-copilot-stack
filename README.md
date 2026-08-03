@@ -112,7 +112,7 @@ Host root:          /home/alice/Source/Codebase
 Host workspace:     /home/alice/Source/Codebase/Applications/MyApplication
 Docker mount:       /home/alice/Source/Codebase -> /workspace
 Container cwd:      /workspace/Applications/MyApplication
-Copilot config:     /workspace/Applications/MyApplication/.copilot
+Copilot workspace state: /workspace/Applications/MyApplication/.copilot
 Container user:     1000:1000
 ```
 
@@ -143,7 +143,7 @@ Host root:          <resolved-root>
 Host workspace:     <resolved-workspace>
 Docker mount:       <resolved-root> -> /workspace
 Container cwd:      <container-workspace>
-Copilot config:     <container-workspace>/.copilot
+Copilot workspace state: <container-workspace>/.copilot
 Container user:     <host-uid>:<host-gid>
 Container name:     copilot-<projectname>-<UTC timestamp>
 Copilot mode:       YOLO, all paths allowed
@@ -153,9 +153,11 @@ When no workspace file is used, `VS Code workspace` displays `<current directory
 `Container user` is shown by the Linux launcher; the PowerShell launcher uses
 the Compose environment defaults.
 
-### Workspace-scoped Copilot state and instructions
+### Workspace-scoped state and central login
 
-`COPILOT_CONFIG_DIR` is set to `Workspace/.copilot` inside the mounted Root. Existing project-specific Copilot configuration and session state therefore remain persistent across container runs.
+`COPILOT_CONFIG_DIR` points to `Workspace/.copilot` inside the mounted Root, so sessions, logs, command history, trusted folders, and other CLI state remain local to the selected workspace. Modern Copilot preferences in `settings.json` also remain workspace-local, including the default model, reasoning effort, agent mode, context tier, terminal behavior, and feature preferences. This prevents preferences selected for one workspace from affecting another.
+
+On normal startup, central `config/copilot/config.json` values are merged into the workspace `config.json` and override matching workspace values; workspace-only values remain local. The central file is not modified during normal launches. Only `copilot login` temporarily links the workspace `config.json` to `config/copilot/config.json`, allowing the official CLI login flow to update shared GitHub credentials. The central file is seeded with exactly `trusted_folders: ["/workspace"]`; workspace-specific trust remains local.
 
 The container working directory is set to Workspace, so Copilot discovers the project-specific `AGENTS.md` relative to that directory. The launcher does not copy `AGENTS.md` to Root. Instructions closer to files in shared-library directories can still apply through Copilot's normal hierarchical instruction discovery.
 
@@ -199,8 +201,10 @@ Authentication is persistent but deliberately separate from workspace state:
 
 | State | Host location | Container location |
 | --- | --- | --- |
-| Workspace sessions, instructions, trusted folders, and Copilot settings | `<selected workspace>/.copilot` | `COPILOT_CONFIG_DIR` |
-| Stack authentication and BYOK settings | `config/copilot/auth.env` | `/copilot-stack-config/auth.env` |
+| Workspace sessions, logs, command history, and other CLI state | `<selected workspace>/.copilot` | `COPILOT_CONFIG_DIR` |
+| Shared GitHub login | `config/copilot/config.json` | Temporary `COPILOT_CONFIG_DIR/config.json` symlink during `copilot login` only |
+| Workspace settings and trusted folders | `<selected workspace>/.copilot/config.json` | `COPILOT_CONFIG_DIR/config.json` |
+| Stack mode and BYOK settings | `config/copilot/auth.env` | `/copilot-stack-config/auth.env` |
 
 On the first normal container start, when no `auth.env` exists, the entrypoint
 opens an interactive configuration wizard. Non-interactive starts fail clearly
@@ -227,9 +231,9 @@ docker compose run --rm copilot reset-auth
 docker compose run --rm copilot reset-auth --yes
 ```
 
-`reset-auth` deletes only `config/copilot/auth.env`; it never deletes a
-workspace `.copilot` directory. The launcher-specific arguments are consumed
-by the launcher and are never passed to Copilot CLI.
+`reset-auth` deletes only `config/copilot/auth.env`; it never deletes the shared
+`config/copilot/config.json`, workspace session state, or signs out GitHub. The launcher-specific arguments are consumed by the launcher and are
+never passed to Copilot CLI.
 
 The wizard supports three explicit modes:
 
@@ -239,10 +243,14 @@ The wizard supports three explicit modes:
 | `byok` | External provider | Disabled unless the CLI can work without GitHub | Optional |
 | `hybrid` | External provider | Enabled with a GitHub token | Not allowed |
 
-For `github` and `hybrid`, provide a user-owned fine-grained PAT with the
-**Copilot Requests** account permission, an OAuth token, or a GitHub App
-user-to-server token. Classic `ghp_` PATs are not supported by Copilot CLI.
-The stack exports this only as `COPILOT_GITHUB_TOKEN`.
+For `github` and `hybrid`, the setup wizard opens the official `copilot login --device-code`
+flow, which displays a code to enter in a browser. Copilot CLI writes its GitHub credentials centrally to
+`config/copilot/config.json`; the stack never stores or exports a GitHub token through
+`auth.env`. Existing token entries in `auth.env` are ignored and removed on the
+next configuration save. A direct `copilot login` bypasses stack provider loading,
+so it can repair GitHub credentials even if `auth.env` is stale or incomplete.
+GitHub mode also ignores leftover BYOK fields. Run `copilot login` again from the
+container if GitHub credentials need to be changed.
 
 For BYOK, the currently supported provider types are `openai`, `azure`, and
 `anthropic`. The `openai` type covers OpenAI and OpenAI Chat
@@ -275,29 +283,26 @@ Hybrid mode always disables offline mode so GitHub-integrated features, such
 as the GitHub MCP server, code search, and `/delegate`, remain available.
 
 `config/copilot/auth.env` is generated with owner-only permissions where the
-host filesystem supports them and is ignored by Git. The tracked
+host filesystem supports them and is ignored by Git. It stores only the selected
+mode and BYOK provider values, never GitHub credentials. The tracked
 `config/copilot/auth.env.example` contains placeholders only and is never
 loaded automatically. The mount is configured relative to this repository, so
 both direct Compose and launchers invoked from another directory use the same
 stack configuration.
 
-#### Automatic workspace trust
+#### Workspace trust
 
-Automatic trust is enabled by default. The selected container working
-directory is added to that workspace's `.copilot/config.json` before startup.
-Existing JSON properties are preserved and updates are atomic. Invalid JSON is
-reported and left untouched. Set `COPILOT_AUTO_TRUST_WORKSPACE=0` before
-starting the launcher or Compose to disable it.
+The stack no longer changes trusted folders during normal startup. Each workspace manages trust in its local `.copilot/config.json`. The central login configuration contains only `trusted_folders: ["/workspace"]`, which is sufficient while running the official `copilot login` command.
 
 #### Security limitations
 
-The generated authentication file is plaintext, not encrypted. Treat
-`config/copilot/` as sensitive: secrets can potentially be read by root, users
-with access to this repository directory, users with access to the Docker
-daemon, and processes able to inspect the running container environment.
-Do not copy `auth.env` into image build arguments, Dockerfiles, logs, issue
-reports, or source control. Reconfigure or reset the stack if a credential is
-exposed.
+The generated BYOK configuration file is plaintext, not encrypted. Treat
+`config/copilot/` as sensitive when it contains a provider key: secrets can
+potentially be read by root, users with access to this repository directory,
+users with access to the Docker daemon, and processes able to inspect the
+running container environment. GitHub login credentials are held in the shared
+`config/copilot/config.json`. Do not copy credential files into image build
+arguments, Dockerfiles, logs, issue reports, or source control.
 
 ### Corporate or proxy networks
 
