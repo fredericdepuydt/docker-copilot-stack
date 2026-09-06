@@ -66,10 +66,18 @@ try {
 } catch {
   process.exit(1);
 }
+
 ' "$provider_url" || {
         fail "Provider URL must be an absolute HTTP or HTTPS URL without embedded credentials, query parameters, or fragments."
         return 1
     }
+}
+
+validate_provider_type() {
+    case "$1" in
+        openai | azure | anthropic) return 0 ;;
+        *) fail "Supported provider types are openai, azure, and anthropic (without trailing slashes)." ;;
+    esac
 }
 
 reset_auth_values() {
@@ -180,13 +188,7 @@ validate_auth_config() {
             AUTH_OFFLINE=false
             ;;
         byok | hybrid)
-            [[ "$AUTH_PROVIDER_TYPE" == openai ||
-                "$AUTH_PROVIDER_TYPE" == azure ||
-                "$AUTH_PROVIDER_TYPE" == anthropic ]] ||
-                {
-                    fail "Unsupported provider type '$AUTH_PROVIDER_TYPE'. Supported types are openai, azure, and anthropic."
-                    return 1
-                }
+            validate_provider_type "$AUTH_PROVIDER_TYPE" || return 1
             [[ -n "$AUTH_PROVIDER_BASE_URL" ]] || {
                 fail "BYOK configuration requires a provider URL."
                 return 1
@@ -232,6 +234,7 @@ prepare_stack_config_directory() {
 write_auth_config() {
     local temporary_file
 
+    validate_auth_config || return 1
     prepare_stack_config_directory || return 1
     if ! temporary_file=$(mktemp "$STACK_CONFIG_DIR/.auth.env.XXXXXX"); then
         fail "Could not create temporary authentication configuration."
@@ -302,11 +305,11 @@ read_secret_value() {
     local required=$2
     local value
 
-    if ! read -r -s -p "$prompt" value; then
+    if ! IFS= read -r -s -p "$prompt" value; then
         fail "Unable to read configuration input."
         return 1
     fi
-    printf '\n'
+    printf '\n' >&2
     if [[ "$required" == required ]]; then
         if [[ -z "$value" ]]; then
             fail "A value is required."
@@ -322,8 +325,14 @@ configure_byok_values() {
     local api_key_required=optional
 
     printf '%s\n' "Supported provider types: openai (including OpenAI-compatible services such as LiteLLM, Ollama, and vLLM), azure, anthropic."
-    AUTH_PROVIDER_TYPE=$(read_required_value "Provider type [openai/azure/anthropic]: ") || return 1
-    AUTH_PROVIDER_BASE_URL=$(read_required_value "Provider base URL: ") || return 1
+    while true; do
+        AUTH_PROVIDER_TYPE=$(read_required_value "Provider type [openai/azure/anthropic]: ") || return 1
+        if validate_provider_type "$AUTH_PROVIDER_TYPE"; then break; fi
+    done
+    while true; do
+        AUTH_PROVIDER_BASE_URL=$(read_required_value "Provider base URL (http:// or https://): ") || return 1
+        if validate_provider_url "$AUTH_PROVIDER_BASE_URL"; then break; fi
+    done
     AUTH_MODEL=$(read_required_value "Provider model identifier: ") || return 1
     if [[ "$AUTH_PROVIDER_TYPE" == azure || "$AUTH_PROVIDER_TYPE" == anthropic ]]; then
         api_key_required=required
@@ -372,29 +381,25 @@ setup_central_config_link() {
         rm -- "$workspace_config"
     fi
 
-    if [[ -e "$central_config" ]]; then
-        COPILOT_CENTRAL_CONFIG="$central_config" COPILOT_WORKSPACE_CONFIG="$workspace_config" node <<'NODE'
+    COPILOT_CENTRAL_CONFIG="$central_config" COPILOT_WORKSPACE_CONFIG="$workspace_config" node <<'NODE' || return 1
 const fs = require("fs");
 const path = require("path");
 
 const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
 const workspaceFile = process.env.COPILOT_WORKSPACE_CONFIG;
-let central;
-let workspace;
-try {
-  central = JSON.parse(fs.readFileSync(centralFile, "utf8"));
-  workspace = fs.existsSync(workspaceFile)
-    ? JSON.parse(fs.readFileSync(workspaceFile, "utf8"))
-    : {};
-} catch {
-  console.error("copilot-stack: central or workspace config.json is invalid; workspace configuration was not prepared.");
-  process.exit(1);
+function readConfig(file, label) {
+  try {
+    const content = fs.existsSync(file) ? fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "") : "";
+    const value = content.trim() ? JSON.parse(content) : {};
+    if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("not an object");
+    return value;
+  } catch {
+    console.error(`copilot-stack: ${label} config.json is unreadable or invalid; workspace configuration was not prepared.`);
+    process.exit(1);
+  }
 }
-if (!central || Array.isArray(central) || typeof central !== "object" ||
-    !workspace || Array.isArray(workspace) || typeof workspace !== "object") {
-  console.error("copilot-stack: central and workspace config.json files must contain JSON objects.");
-  process.exit(1);
-}
+const central = readConfig(centralFile, "central");
+const workspace = readConfig(workspaceFile, "workspace");
 // Central credentials and defaults override matching workspace properties.
 const merged = { ...workspace, ...central };
 const temporaryFile = path.join(
@@ -412,7 +417,6 @@ try {
   process.exit(1);
 }
 NODE
-    fi
 
     [[ ! -e "$workspace_config" ]] || chmod 0600 -- "$workspace_config" ||
         log_warning "could not restrict permissions on workspace Copilot configuration."
@@ -440,13 +444,16 @@ link_central_config_for_login() {
             return 1
         }
     fi
-    COPILOT_CENTRAL_CONFIG="$central_config" node <<'NODE'
+    COPILOT_CENTRAL_CONFIG="$central_config" node <<'NODE' || return 1
 const fs = require("fs");
 const path = require("path");
 const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
 let config = {};
 try {
-  if (fs.existsSync(centralFile)) config = JSON.parse(fs.readFileSync(centralFile, "utf8"));
+  if (fs.existsSync(centralFile)) {
+    const content = fs.readFileSync(centralFile, "utf8").replace(/^\uFEFF/, "");
+    config = content.trim() ? JSON.parse(content) : {};
+  }
   if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("not an object");
 } catch {
   console.error("copilot-stack: central config.json is invalid; central login configuration was not prepared.");
@@ -689,8 +696,8 @@ main() {
     clear_stack_auth_environment
 
     if ! setup_container_user; then
-        setup_central_config_link
-        load_auth
+        setup_central_config_link || return 1
+        load_auth || return 1
         exec "$@"
     fi
 

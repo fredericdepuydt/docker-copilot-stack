@@ -347,6 +347,33 @@ write_values() {
     write_auth_config
 }
 
+# The prompt newline belongs on stderr, never in the captured secret.
+captured_secret=$(read_secret_value "Test key: " optional <<<'fixture-key')
+[[ "$captured_secret" == fixture-key ]]
+captured_secret=$(read_secret_value "Test key: " optional <<<'')
+[[ -z "$captured_secret" ]]
+captured_secret=$(read_secret_value "Test key: " required <<<' key with spaces ')
+[[ "$captured_secret" == ' key with spaces ' ]]
+
+# Retry invalid provider details before asking for a key, then persist the wizard values.
+AUTH_MODE=byok
+configure_byok_values >/dev/null <<'INPUT'
+openai\
+openai
+litellm.automation:4000/v1
+http://litellm.automation:4000/v1
+Personal: gpt-5.6-terra
+fixture-key
+y
+INPUT
+[[ "$AUTH_PROVIDER_TYPE" == openai ]]
+[[ "$AUTH_PROVIDER_BASE_URL" == http://litellm.automation:4000/v1 ]]
+[[ "$AUTH_MODEL" == 'Personal: gpt-5.6-terra' ]]
+[[ "$AUTH_PROVIDER_API_KEY" == fixture-key && "$AUTH_OFFLINE" == true ]]
+write_auth_config
+read_auth_config "$AUTH_CONFIG_FILE"
+[[ "$AUTH_PROVIDER_API_KEY" == fixture-key && "$AUTH_OFFLINE" == true ]]
+
 write_values github "" "" "" "" false
 clear_stack_auth_environment
 load_auth >/dev/null
@@ -453,6 +480,55 @@ fi
 WORKSPACE="$ENTRYPOINT_TEST_ROOT/workspace"
 COPILOT_CONFIG_DIR="$WORKSPACE/.copilot"
 mkdir -p -- "$COPILOT_CONFIG_DIR" "$STACK_CONFIG_DIR"
+
+(
+    STACK_CONFIG_DIR="$ENTRYPOINT_TEST_ROOT/fresh-stack"
+    COPILOT_CONFIG_DIR="$ENTRYPOINT_TEST_ROOT/fresh-workspace/.copilot"
+    setup_central_config_link
+    [[ -f "$COPILOT_CONFIG_DIR/config.json" && ! -e "$STACK_CONFIG_DIR/config.json" ]]
+    node -e 'if (Object.keys(require(process.argv[1])).length) process.exit(1)' "$COPILOT_CONFIG_DIR/config.json"
+
+    # Empty files are uninitialized state; the central file remains untouched.
+    : >"$STACK_CONFIG_DIR/config.json"
+    : >"$COPILOT_CONFIG_DIR/config.json"
+    setup_central_config_link
+    [[ ! -s "$STACK_CONFIG_DIR/config.json" ]]
+    node -e 'if (Object.keys(require(process.argv[1])).length) process.exit(1)' "$COPILOT_CONFIG_DIR/config.json"
+
+    printf '\357\273\277{"central":"preserved"}\n' >"$STACK_CONFIG_DIR/config.json"
+    printf '\357\273\277 \r\n' >"$COPILOT_CONFIG_DIR/config.json"
+    cp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    setup_central_config_link
+    cmp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    node -e 'if (require(process.argv[1]).central !== "preserved") process.exit(1)' "$COPILOT_CONFIG_DIR/config.json"
+
+    # Invalid nonempty JSON must fail, without rewriting either source file.
+    for invalid_config in '{bad-json' '[]' 'null'; do
+        printf '%s' "$invalid_config" >"$COPILOT_CONFIG_DIR/config.json"
+        if setup_central_config_link 2>"$ENTRYPOINT_TEST_ROOT/config-error"; then
+            echo "Invalid workspace config was accepted." >&2
+            exit 1
+        fi
+        [[ "$(<"$COPILOT_CONFIG_DIR/config.json")" == "$invalid_config" ]]
+        grep -q 'workspace config.json is unreadable or invalid' "$ENTRYPOINT_TEST_ROOT/config-error"
+        cmp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    done
+    printf '{}\n' >"$COPILOT_CONFIG_DIR/config.json"
+    printf '{bad-json' >"$STACK_CONFIG_DIR/config.json"
+    if setup_central_config_link 2>"$ENTRYPOINT_TEST_ROOT/config-error"; then
+        echo "Invalid central config was accepted." >&2
+        exit 1
+    fi
+    grep -q 'central config.json is unreadable or invalid' "$ENTRYPOINT_TEST_ROOT/config-error"
+    [[ "$(<"$COPILOT_CONFIG_DIR/config.json")" == '{}' ]]
+    [[ "$(<"$STACK_CONFIG_DIR/config.json")" == '{bad-json' ]]
+    if link_central_config_for_login 2>/dev/null; then
+        echo "Login accepted invalid central config." >&2
+        exit 1
+    fi
+    [[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
+)
+
 printf '{"central":"forced","trusted_folders":["/workspace"]}\n' >"$STACK_CONFIG_DIR/config.json"
 printf '{"workspaceOnly":"preserved","central":"workspace-value","trusted_folders":["/workspace/project"]}\n' >"$COPILOT_CONFIG_DIR/config.json"
 setup_central_config_link

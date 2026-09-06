@@ -162,6 +162,11 @@ the Compose environment defaults.
 
 On normal startup, central `config/copilot/config.json` values are merged into the workspace `config.json` and override matching workspace values; workspace-only values remain local. The central file is not modified during normal launches. Only `copilot login` temporarily links the workspace `config.json` to `config/copilot/config.json`, allowing the official CLI login flow to update shared GitHub credentials. The central file is seeded with exactly `trusted_folders: ["/workspace"]`; workspace-specific trust remains local.
 
+Missing or empty config files are treated as uninitialized state, and startup
+creates a valid workspace `config.json`. UTF-8 byte-order marks from Windows
+editors are accepted. Invalid nonempty JSON stops startup and identifies the
+central or workspace file without overwriting it or displaying its contents.
+
 The container working directory is set to Workspace, so Copilot discovers the project-specific `AGENTS.md` relative to that directory. The launcher does not copy `AGENTS.md` to Root. Instructions closer to files in shared-library directories can still apply through Copilot's normal hierarchical instruction discovery.
 
 ## Security
@@ -299,6 +304,12 @@ Local. Copilot requires a streaming model with tool/function-calling support.
 The wizard validates the provider URL, model identifier, provider type, and
 required key before saving. OpenAI-compatible local services may leave the API
 key blank; Azure OpenAI and Anthropic require one.
+
+Enter the provider type exactly (for example, `openai`, without a trailing
+slash) and include `http://` or `https://` in the provider URL, such as
+`http://litellm.automation:4000/v1`. The wizard retries invalid provider types
+and URLs before requesting the model and hidden API key. Model identifiers
+must match the aliases configured by your provider.
 
 Example values, entered through the wizard rather than placed in a tracked
 file:
