@@ -39,6 +39,7 @@ write_workspace() {
     local path=$1
     local root=$2
     local workspace=$3
+    local target_setting=${4:-}
 
     cat >"$path" <<EOF
 {
@@ -54,6 +55,7 @@ write_workspace() {
     },
   ],
   "settings": {
+    $target_setting
     "url": "https://example.test/path"
   },
 }
@@ -93,6 +95,7 @@ mkdir -p -- "$MOCK_BIN"
 cat >"$MOCK_BIN/docker-compose" <<'EOF'
 #!/bin/sh
 printf '%s\0' "$@" >"$COPILOT_TEST_ARGUMENTS"
+printf '%s' "$COPILOT_BUILD_TARGET" >"$COPILOT_TEST_ARGUMENTS.target"
 exit "${COPILOT_TEST_EXIT_CODE:-0}"
 EOF
 chmod +x -- "$MOCK_BIN/docker-compose"
@@ -106,6 +109,7 @@ if [ "$1" != "compose" ]; then
 fi
 shift
 printf '%s\0' "$@" >"$COPILOT_TEST_ARGUMENTS"
+printf '%s' "$COPILOT_BUILD_TARGET" >"$COPILOT_TEST_ARGUMENTS.target"
 EOF
 chmod +x -- "$MODERN_MOCK_BIN/docker"
 
@@ -114,6 +118,7 @@ NESTED_WORKSPACE="$ROOT_WITH_SPACES/Applications/Area/My Application"
 mkdir -p -- "$NESTED_WORKSPACE"
 write_workspace "$NESTED_WORKSPACE/nested.code-workspace" "../../.." "."
 run_launcher "$NESTED_WORKSPACE" "" chat --model test-model >/dev/null
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "Absent setting defaults to base."
 load_arguments
 assert_equal \
     "/workspace/Applications/Area/My Application" \
@@ -178,6 +183,30 @@ assert_contains "${environment_arguments[*]}" "PUID=$(id -u)" "PUID mapping."
 load_arguments
 assert_equal "-f" "${DOCKER_ARGUMENTS[0]}" "Modern docker compose invocation."
 
+TARGET_DIRECTORY="$TEST_ROOT/targets"
+mkdir -p -- "$TARGET_DIRECTORY"
+for setting in '"dotnet"' '"base"' '""' '"   "' null; do
+    write_workspace "$TARGET_DIRECTORY/target.code-workspace" "." "." \
+        "\"copilot.dockerBuildTarget\": $setting,"
+    COPILOT_BUILD_TARGET=dotnet run_launcher "$TARGET_DIRECTORY" "" --help >/dev/null
+    expected_target=base
+    [[ "$setting" != '"dotnet"' ]] || expected_target=dotnet
+    assert_equal "$expected_target" "$(<"$ARGUMENTS_FILE.target")" "Workspace target $setting."
+done
+write_workspace "$TARGET_DIRECTORY/target.code-workspace" "." "."
+COPILOT_BUILD_TARGET=dotnet run_launcher "$TARGET_DIRECTORY" "" --help >/dev/null
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "Absent setting overrides inherited target."
+for setting in '"unknown"' '"Dotnet"' true 42 '[]' '{}'; do
+    write_workspace "$TARGET_DIRECTORY/target.code-workspace" "." "." \
+        "\"copilot.dockerBuildTarget\": $setting,"
+    rm -f -- "$ARGUMENTS_FILE"
+    if target_output=$(run_launcher "$TARGET_DIRECTORY" "" --help 2>&1); then
+        fail "Invalid target $setting was accepted."
+    fi
+    assert_contains "$target_output" "Invalid copilot.dockerBuildTarget" "Invalid target error."
+    [[ ! -e "$ARGUMENTS_FILE" ]] || fail "Invalid target invoked Compose."
+done
+
 CREATE_DIRECTORY="$TEST_ROOT/create"
 mkdir -p -- "$CREATE_DIRECTORY"
 run_launcher "$CREATE_DIRECTORY" $'\n' >/dev/null
@@ -186,6 +215,7 @@ run_launcher "$CREATE_DIRECTORY" $'\n' >/dev/null
 load_arguments
 assert_equal "/workspace" "$(argument_after --workdir)" "Default workspace cwd."
 assert_equal "--banner" "${DOCKER_ARGUMENTS[-1]}" "Default Copilot argument."
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "Created workspace defaults to base."
 
 DECLINE_DIRECTORY="$TEST_ROOT/decline"
 mkdir -p -- "$DECLINE_DIRECTORY"
@@ -193,6 +223,7 @@ decline_output=$(run_launcher "$DECLINE_DIRECTORY" $'n\n')
 [[ ! -e "$DECLINE_DIRECTORY/$(basename -- "$DECLINE_DIRECTORY").code-workspace" ]] ||
     fail "Declining workspace creation still created a file."
 assert_contains "$decline_output" "<current directory defaults>" "Default workspace display."
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "No workspace defaults to base."
 
 MULTIPLE_DIRECTORY="$TEST_ROOT/multiple"
 mkdir -p -- "$MULTIPLE_DIRECTORY/selected"

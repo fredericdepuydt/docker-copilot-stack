@@ -325,18 +325,27 @@ function New-ContainerName {
 function Invoke-Compose {
     param(
         [Parameter(Mandatory)]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+
+        [ValidateSet("base", "dotnet")]
+        [string]$BuildTarget = "base"
     )
 
-    if ($null -ne (Get-Command "docker-compose" -ErrorAction SilentlyContinue)) {
-        & docker-compose @Arguments
-        return
+    $previousBuildTarget = $env:COPILOT_BUILD_TARGET
+    try {
+        $env:COPILOT_BUILD_TARGET = $BuildTarget
+        if ($null -ne (Get-Command "docker-compose" -ErrorAction SilentlyContinue)) {
+            & docker-compose @Arguments
+            return
+        }
+        if ($null -ne (Get-Command "docker" -ErrorAction SilentlyContinue)) {
+            & docker compose @Arguments
+            return
+        }
+        throw "Docker Compose startup failed: neither 'docker-compose' nor 'docker' was found in PATH."
+    } finally {
+        $env:COPILOT_BUILD_TARGET = $previousBuildTarget
     }
-    if ($null -ne (Get-Command "docker" -ErrorAction SilentlyContinue)) {
-        & docker compose @Arguments
-        return
-    }
-    throw "Docker Compose startup failed: neither 'docker-compose' nor 'docker' was found in PATH."
 }
 
 function Read-WorkspaceConfiguration {
@@ -356,7 +365,16 @@ function Read-WorkspaceConfiguration {
     $workspaceEntry = Get-NamedWorkspaceFolder -WorkspaceData $workspaceData -Name "Workspace" -WorkspaceFile $WorkspaceFile.FullName
     $workspaceFileDirectory = $WorkspaceFile.Directory.FullName
 
+    $buildTarget = $workspaceData.settings.'copilot.dockerBuildTarget'
+    if ($null -eq $buildTarget -or ($buildTarget -is [string] -and [string]::IsNullOrWhiteSpace($buildTarget))) {
+        $buildTarget = "base"
+    }
+    if ($buildTarget -isnot [string] -or $buildTarget -cnotin @("base", "dotnet")) {
+        throw "Invalid copilot.dockerBuildTarget in '$($WorkspaceFile.FullName)': expected 'base' or 'dotnet'."
+    }
+
     return @{
+        BuildTarget = $buildTarget
         Root = Resolve-WorkspaceDirectory `
             -WorkspaceFileDirectory $workspaceFileDirectory `
             -FolderPath ([string]$rootEntry.path) `
@@ -415,6 +433,7 @@ function Invoke-CopilotLauncher {
 
     $workspaceFile = $null
     $workspaceDisplay = "<current directory defaults>"
+    $buildTarget = "base"
 
     if ($workspaceFiles.Count -gt 0) {
         $workspaceFile = Select-WorkspaceFile -WorkspaceFiles $workspaceFiles
@@ -426,6 +445,7 @@ function Invoke-CopilotLauncher {
         $configuration = Read-WorkspaceConfiguration -WorkspaceFile $workspaceFile
         $root = $configuration.Root
         $workspace = $configuration.Workspace
+        $buildTarget = $configuration.BuildTarget
         $workspaceDisplay = $workspaceFile.FullName
     } else {
         $root = (Get-Item -LiteralPath $currentDirectory -ErrorAction Stop).FullName
@@ -447,6 +467,7 @@ function Invoke-CopilotLauncher {
     $containerName = New-ContainerName -ProjectName $projectName
 
     Write-Host ("VS Code workspace: {0}" -f $workspaceDisplay)
+    Write-Host ("Docker build target: {0}" -f $buildTarget)
     Write-Host ("Host root:          {0}" -f $root)
     Write-Host ("Host workspace:     {0}" -f $workspace)
     Write-Host ("Docker mount:       {0} -> /workspace" -f $root)
@@ -476,7 +497,7 @@ function Invoke-CopilotLauncher {
     $dockerArgs += $Arguments
 
     try {
-        Invoke-Compose -Arguments $dockerArgs
+        Invoke-Compose -Arguments $dockerArgs -BuildTarget $buildTarget
     } catch {
         throw "Docker Compose startup failed: $($_.Exception.Message)"
     }

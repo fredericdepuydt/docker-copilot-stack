@@ -7,7 +7,7 @@ This repository builds and runs the GitHub Copilot CLI in Docker. Use this file 
 - Package `@github/copilot` in a `node:20-slim` image.
 - Run Copilot as a non-root user created from `PUID`/`PGID`.
 - Support corporate/custom CA certificates during image build.
-- Provide .NET SDKs (`8.0`, `10.0`) inside the same image.
+- Provide .NET SDKs (`8.0`, `10.0`) through the optional `dotnet` image target; default to `base`.
 - Provide equivalent Linux and Windows host launchers and installers.
 
 ## Source of truth
@@ -41,7 +41,8 @@ docker-compose build
 docker-compose run --rm copilot copilot --help
 
 # Verify SDK availability when toolchain layers changed
-docker-compose run --rm copilot dotnet --list-sdks
+COPILOT_BUILD_TARGET=dotnet docker-compose build
+COPILOT_BUILD_TARGET=dotnet docker-compose run --rm copilot dotnet --list-sdks
 
 # Linux launcher and installer behavior
 ./tests/copilot.Tests.sh

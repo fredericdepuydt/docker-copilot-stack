@@ -11,7 +11,7 @@ A Docker container that runs the [GitHub Copilot CLI](https://www.npmjs.com/pack
 
 ## Quick Start
 
-Build the image:
+Build the default lightweight image (without .NET):
 
 ```bash
 docker-compose build
@@ -105,7 +105,9 @@ For this Linux layout:
         `-- MyApplication.code-workspace
 ```
 
-Put the example workspace file above in `MyApplication`. Launching `copilot` there produces:
+Put the example workspace file above in `MyApplication` and add
+`"copilot.dockerBuildTarget": "dotnet"` to its `settings` to include the SDKs.
+Launching `copilot` there produces:
 
 ```text
 Host root:          /home/alice/Source/Codebase
@@ -139,6 +141,7 @@ Before Docker starts, the resolved mapping is displayed:
 
 ```text
 VS Code workspace: <workspace-file>
+Docker build target: <base-or-dotnet>
 Host root:          <resolved-root>
 Host workspace:     <resolved-workspace>
 Docker mount:       <resolved-root> -> /workspace
@@ -169,12 +172,49 @@ Only launch it from a trusted codebase, review the resolved directories printed 
 
 ## Configuration
 
-### .NET SDKs
+### Docker build targets and optional .NET SDKs
 
-The image includes .NET 8 and .NET 10 SDKs:
+The default `base` target includes Node.js, Copilot CLI, common tools, custom
+certificates, and the existing entrypoint. It contains neither .NET SDKs nor
+Microsoft's package repository. The optional `dotnet` target extends `base`
+with the Microsoft repository and .NET 8 and .NET 10 SDKs. A plain
+`docker build ./build/copilot` also produces the lightweight image through
+the final `default` stage.
+
+Opt in from the selected `.code-workspace` file:
+
+```json
+"settings": {
+  "terminal.integrated.cwd": "${workspaceFolder:Workspace}",
+  "copilot.dockerBuildTarget": "dotnet"
+}
+```
+
+Both `copilot` and `copilot.ps1` resolve this setting using their existing JSONC
+parsers before invoking Compose. An absent, null, empty, or whitespace-only
+setting resolves to `base`; explicit `base` is also accepted. Other values are
+rejected. No workspace file, newly generated workspaces, and stack authentication
+commands use `base`. The repository's own workspace leaves the setting absent.
+
+The launchers pass the resolved `COPILOT_BUILD_TARGET` in Compose's environment,
+overriding any inherited value for that invocation. Compose uses it for both the
+build target and a separate image tag per variant, so switching workspaces cannot
+reuse the other variant. Compose builds a missing image on first launch; rebuild
+explicitly after changing the Dockerfile, certificates, or Copilot version.
+
+Direct Compose commands do not parse workspace files. They default to `base`;
+set the environment variable for **both build and run** to select .NET:
 
 ```bash
+COPILOT_BUILD_TARGET=dotnet docker-compose build
+COPILOT_BUILD_TARGET=dotnet docker-compose run --rm copilot dotnet --list-sdks
+```
+
+```powershell
+$env:COPILOT_BUILD_TARGET = "dotnet"
+docker-compose build
 docker-compose run --rm copilot dotnet --list-sdks
+Remove-Item Env:COPILOT_BUILD_TARGET
 ```
 
 ### User ID mapping

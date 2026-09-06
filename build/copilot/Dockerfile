@@ -1,5 +1,5 @@
 # Use a slim Node.js base image, which gives us `npm`.
-FROM node:20-slim
+FROM node:20-slim AS base
 
 # Set non-interactive frontend to avoid prompts during package installation.
 ENV DEBIAN_FRONTEND=noninteractive
@@ -7,19 +7,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install base tools and GPG support for external package repositories.
 RUN apt-get update && apt-get install -y \
   curl gpg git gosu ca-certificates expect apt-transport-https \
-  && rm -rf /var/lib/apt/lists/*
-
-# Add Microsoft's Debian package feed for .NET SDK installation.
-RUN mkdir -p /etc/apt/keyrings \
-  && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
-  && chmod go+r /etc/apt/keyrings/microsoft.gpg \
-  && . /etc/os-release \
-  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/${VERSION_ID}/prod ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/microsoft-prod.list
-
-# Install .NET SDKs used by the mounted workspace projects.
-RUN apt-get update && apt-get install -y \
-  dotnet-sdk-8.0 \
-  dotnet-sdk-10.0 \
   && rm -rf /var/lib/apt/lists/*
 
 # Add certificates
@@ -49,3 +36,21 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # The default command to run if none is provided.
 CMD [ "copilot", "--banner" ]
+
+# Optional SDKs inherit the common tools, certificates, and runtime configuration.
+FROM base AS dotnet
+
+# Add Microsoft's Debian package feed only to the .NET variant.
+RUN mkdir -p /etc/apt/keyrings \
+  && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
+  && chmod go+r /etc/apt/keyrings/microsoft.gpg \
+  && . /etc/os-release \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/${VERSION_ID}/prod ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/microsoft-prod.list
+
+RUN apt-get update && apt-get install -y \
+  dotnet-sdk-8.0 \
+  dotnet-sdk-10.0 \
+  && rm -rf /var/lib/apt/lists/*
+
+# A build without --target must remain lightweight.
+FROM base AS default
