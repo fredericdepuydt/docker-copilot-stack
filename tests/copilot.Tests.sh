@@ -502,8 +502,27 @@ mkdir -p -- "$COPILOT_CONFIG_DIR" "$STACK_CONFIG_DIR"
     cmp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
     node -e 'if (require(process.argv[1]).central !== "preserved") process.exit(1)' "$COPILOT_CONFIG_DIR/config.json"
 
+    # Copilot writes a leading comment header to its managed config.json.
+    printf '\357\273\277// User settings belong in settings.json.\r\n// This file is managed automatically.\r\n{"central":"preserved"}\n' >"$STACK_CONFIG_DIR/config.json"
+    printf '// User settings belong in settings.json.\n// This file is managed automatically.\n{"url":"https://example.test/path//value","central":"old"}\n' >"$COPILOT_CONFIG_DIR/config.json"
+    cp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    setup_central_config_link
+    cmp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    node -e '
+const config = require(process.argv[1]);
+if (config.central !== "preserved" || config.url !== "https://example.test/path//value") process.exit(1);
+' "$COPILOT_CONFIG_DIR/config.json"
+    link_central_config_for_login
+    [[ -L "$COPILOT_CONFIG_DIR/config.json" ]]
+    node -e '
+const config = require(process.argv[1]);
+if (config.central !== "preserved" || JSON.stringify(config.trusted_folders) !== JSON.stringify(["/workspace"])) process.exit(1);
+' "$STACK_CONFIG_DIR/config.json"
+    setup_central_config_link
+    cp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+
     # Invalid nonempty JSON must fail, without rewriting either source file.
-    for invalid_config in '{bad-json' '[]' 'null'; do
+    for invalid_config in '{bad-json' '[]' 'null' $'// Managed header\n{bad-json'; do
         printf '%s' "$invalid_config" >"$COPILOT_CONFIG_DIR/config.json"
         if setup_central_config_link 2>"$ENTRYPOINT_TEST_ROOT/config-error"; then
             echo "Invalid workspace config was accepted." >&2

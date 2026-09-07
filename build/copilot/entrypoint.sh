@@ -389,7 +389,9 @@ const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
 const workspaceFile = process.env.COPILOT_WORKSPACE_CONFIG;
 function readConfig(file, label) {
   try {
-    const content = fs.existsSync(file) ? fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "") : "";
+    // Copilot prefixes its managed config with // comment lines.
+    const content = fs.existsSync(file) ? fs.readFileSync(file, "utf8")
+      .replace(/^\uFEFF/, "").replace(/^(?:\s*\/\/[^\r\n]*(?:\r?\n|$))+/, "") : "";
     const value = content.trim() ? JSON.parse(content) : {};
     if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("not an object");
     return value;
@@ -451,7 +453,9 @@ const centralFile = process.env.COPILOT_CENTRAL_CONFIG;
 let config = {};
 try {
   if (fs.existsSync(centralFile)) {
-    const content = fs.readFileSync(centralFile, "utf8").replace(/^\uFEFF/, "");
+    // Accept the same managed-file header as normal workspace startup.
+    const content = fs.readFileSync(centralFile, "utf8")
+      .replace(/^\uFEFF/, "").replace(/^(?:\s*\/\/[^\r\n]*(?:\r?\n|$))+/, "");
     config = content.trim() ? JSON.parse(content) : {};
   }
   if (!config || Array.isArray(config) || typeof config !== "object") throw new Error("not an object");

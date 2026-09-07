@@ -164,7 +164,9 @@ On normal startup, central `config/copilot/config.json` values are merged into t
 
 Missing or empty config files are treated as uninitialized state, and startup
 creates a valid workspace `config.json`. UTF-8 byte-order marks from Windows
-editors are accepted. Invalid nonempty JSON stops startup and identifies the
+editors and the leading `//` comment headers written by Copilot are accepted
+in both workspace and central configuration, including during login.
+Invalid nonempty JSON after the header stops startup and identifies the
 central or workspace file without overwriting it or displaying its contents.
 
 The container working directory is set to Workspace, so Copilot discovers the project-specific `AGENTS.md` relative to that directory. The launcher does not copy `AGENTS.md` to Root. Instructions closer to files in shared-library directories can still apply through Copilot's normal hierarchical instruction discovery.
