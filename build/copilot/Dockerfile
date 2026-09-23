@@ -23,6 +23,10 @@ RUN npm install -g @github/copilot@${COPILOT_VERSION}
 # Set the working directory for the container.
 WORKDIR /workspace
 
+# Configure Git with a default user name and email to avoid warnings when using the Copilot CLI.
+RUN git config --system user.name "Copilot" \
+    && git config --system user.email "copilot@local.invalid"
+
 # Normalize line endings and guarantee the executable entrypoint path.
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh \
