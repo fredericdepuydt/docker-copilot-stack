@@ -480,7 +480,15 @@ NODE
         rm -f -- "$workspace_config"
         ln -s -- "$central_config" "$workspace_config"
     fi
-    chmod 0600 -- "$central_config" || log_warning "could not restrict permissions on central Copilot configuration."
+    chmod 0600 -- "$central_config" ||
+        log_warning "could not restrict permissions on central Copilot configuration."
+
+    if [[ -n "$USER_HOME" ]]; then
+        chown "$USER_NAME:$GROUP_NAME" \
+            "$STACK_CONFIG_DIR" \
+            "$central_config" ||
+            log_warning "could not set central Copilot configuration ownership."
+    fi
 }
 
 
