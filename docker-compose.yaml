@@ -1,6 +1,10 @@
 services:
   copilot:
-    build: ./build/copilot
+    build:
+      context: ./build/copilot
+      target: ${COPILOT_BUILD_TARGET:-base}
+    # Keep variants separate when switching between workspaces without rebuilding.
+    image: ${COMPOSE_PROJECT_NAME:-copilot}-copilot:${COPILOT_BUILD_TARGET:-base}
     # Launchers provide a unique project-specific name for `docker compose run` containers.
     working_dir: /workspace
     #stdin_open: true

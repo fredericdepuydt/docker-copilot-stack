@@ -14,6 +14,8 @@ done
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "$LAUNCHER_SOURCE")" && pwd -P)
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yaml"
+# Workspace configuration is authoritative, including when no workspace is selected.
+export COPILOT_BUILD_TARGET=base
 
 fail() {
     echo "copilot: $*" >&2
@@ -224,6 +226,14 @@ for my $name ('Root', 'Workspace') {
 
     print "$path", "\0";
 }
+
+my $target = ref($workspace_data->{settings}) eq 'HASH'
+    ? $workspace_data->{settings}->{'copilot.dockerBuildTarget'}
+    : undef;
+$target = 'base' if !defined($target) || (!ref($target) && $target =~ /^\s*$/);
+abort_parse("Invalid copilot.dockerBuildTarget in '$source': expected 'base' or 'dotnet'.")
+    if ref($target) || ($target ne 'base' && $target ne 'dotnet');
+print "$target", "\0";
 PERL
     then
         error_message=$(<"$parse_error")
@@ -234,8 +244,9 @@ PERL
     mapfile -d '' -t WORKSPACE_FOLDER_PATHS <"$parse_output"
     rm -f -- "$parse_output" "$parse_error"
 
-    [[ ${#WORKSPACE_FOLDER_PATHS[@]} -eq 2 ]] ||
+    [[ ${#WORKSPACE_FOLDER_PATHS[@]} -eq 3 ]] ||
         fail "Workspace parser returned an unexpected result for '$workspace_file'."
+    COPILOT_BUILD_TARGET=${WORKSPACE_FOLDER_PATHS[2]}
 }
 
 resolve_workspace_directory() {
@@ -426,6 +437,7 @@ USER_ID=$(id -u)
 GROUP_ID=$(id -g)
 
 printf 'VS Code workspace: %s\n' "$WORKSPACE_DISPLAY"
+printf 'Docker build target: %s\n' "$COPILOT_BUILD_TARGET"
 printf 'Host root:          %s\n' "$ROOT"
 printf 'Host workspace:     %s\n' "$WORKSPACE"
 printf 'Docker mount:       %s -> /workspace\n' "$ROOT"

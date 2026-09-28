@@ -39,6 +39,7 @@ write_workspace() {
     local path=$1
     local root=$2
     local workspace=$3
+    local target_setting=${4:-}
 
     cat >"$path" <<EOF
 {
@@ -54,6 +55,7 @@ write_workspace() {
     },
   ],
   "settings": {
+    $target_setting
     "url": "https://example.test/path"
   },
 }
@@ -93,6 +95,7 @@ mkdir -p -- "$MOCK_BIN"
 cat >"$MOCK_BIN/docker-compose" <<'EOF'
 #!/bin/sh
 printf '%s\0' "$@" >"$COPILOT_TEST_ARGUMENTS"
+printf '%s' "$COPILOT_BUILD_TARGET" >"$COPILOT_TEST_ARGUMENTS.target"
 exit "${COPILOT_TEST_EXIT_CODE:-0}"
 EOF
 chmod +x -- "$MOCK_BIN/docker-compose"
@@ -106,6 +109,7 @@ if [ "$1" != "compose" ]; then
 fi
 shift
 printf '%s\0' "$@" >"$COPILOT_TEST_ARGUMENTS"
+printf '%s' "$COPILOT_BUILD_TARGET" >"$COPILOT_TEST_ARGUMENTS.target"
 EOF
 chmod +x -- "$MODERN_MOCK_BIN/docker"
 
@@ -114,6 +118,7 @@ NESTED_WORKSPACE="$ROOT_WITH_SPACES/Applications/Area/My Application"
 mkdir -p -- "$NESTED_WORKSPACE"
 write_workspace "$NESTED_WORKSPACE/nested.code-workspace" "../../.." "."
 run_launcher "$NESTED_WORKSPACE" "" chat --model test-model >/dev/null
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "Absent setting defaults to base."
 load_arguments
 assert_equal \
     "/workspace/Applications/Area/My Application" \
@@ -178,6 +183,30 @@ assert_contains "${environment_arguments[*]}" "PUID=$(id -u)" "PUID mapping."
 load_arguments
 assert_equal "-f" "${DOCKER_ARGUMENTS[0]}" "Modern docker compose invocation."
 
+TARGET_DIRECTORY="$TEST_ROOT/targets"
+mkdir -p -- "$TARGET_DIRECTORY"
+for setting in '"dotnet"' '"base"' '""' '"   "' null; do
+    write_workspace "$TARGET_DIRECTORY/target.code-workspace" "." "." \
+        "\"copilot.dockerBuildTarget\": $setting,"
+    COPILOT_BUILD_TARGET=dotnet run_launcher "$TARGET_DIRECTORY" "" --help >/dev/null
+    expected_target=base
+    [[ "$setting" != '"dotnet"' ]] || expected_target=dotnet
+    assert_equal "$expected_target" "$(<"$ARGUMENTS_FILE.target")" "Workspace target $setting."
+done
+write_workspace "$TARGET_DIRECTORY/target.code-workspace" "." "."
+COPILOT_BUILD_TARGET=dotnet run_launcher "$TARGET_DIRECTORY" "" --help >/dev/null
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "Absent setting overrides inherited target."
+for setting in '"unknown"' '"Dotnet"' true 42 '[]' '{}'; do
+    write_workspace "$TARGET_DIRECTORY/target.code-workspace" "." "." \
+        "\"copilot.dockerBuildTarget\": $setting,"
+    rm -f -- "$ARGUMENTS_FILE"
+    if target_output=$(run_launcher "$TARGET_DIRECTORY" "" --help 2>&1); then
+        fail "Invalid target $setting was accepted."
+    fi
+    assert_contains "$target_output" "Invalid copilot.dockerBuildTarget" "Invalid target error."
+    [[ ! -e "$ARGUMENTS_FILE" ]] || fail "Invalid target invoked Compose."
+done
+
 CREATE_DIRECTORY="$TEST_ROOT/create"
 mkdir -p -- "$CREATE_DIRECTORY"
 run_launcher "$CREATE_DIRECTORY" $'\n' >/dev/null
@@ -186,6 +215,7 @@ run_launcher "$CREATE_DIRECTORY" $'\n' >/dev/null
 load_arguments
 assert_equal "/workspace" "$(argument_after --workdir)" "Default workspace cwd."
 assert_equal "--banner" "${DOCKER_ARGUMENTS[-1]}" "Default Copilot argument."
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "Created workspace defaults to base."
 
 DECLINE_DIRECTORY="$TEST_ROOT/decline"
 mkdir -p -- "$DECLINE_DIRECTORY"
@@ -193,6 +223,7 @@ decline_output=$(run_launcher "$DECLINE_DIRECTORY" $'n\n')
 [[ ! -e "$DECLINE_DIRECTORY/$(basename -- "$DECLINE_DIRECTORY").code-workspace" ]] ||
     fail "Declining workspace creation still created a file."
 assert_contains "$decline_output" "<current directory defaults>" "Default workspace display."
+assert_equal base "$(<"$ARGUMENTS_FILE.target")" "No workspace defaults to base."
 
 MULTIPLE_DIRECTORY="$TEST_ROOT/multiple"
 mkdir -p -- "$MULTIPLE_DIRECTORY/selected"
@@ -316,6 +347,33 @@ write_values() {
     write_auth_config
 }
 
+# The prompt newline belongs on stderr, never in the captured secret.
+captured_secret=$(read_secret_value "Test key: " optional <<<'fixture-key')
+[[ "$captured_secret" == fixture-key ]]
+captured_secret=$(read_secret_value "Test key: " optional <<<'')
+[[ -z "$captured_secret" ]]
+captured_secret=$(read_secret_value "Test key: " required <<<' key with spaces ')
+[[ "$captured_secret" == ' key with spaces ' ]]
+
+# Retry invalid provider details before asking for a key, then persist the wizard values.
+AUTH_MODE=byok
+configure_byok_values >/dev/null <<'INPUT'
+openai\
+openai
+litellm.automation:4000/v1
+http://litellm.automation:4000/v1
+Personal: gpt-5.6-terra
+fixture-key
+y
+INPUT
+[[ "$AUTH_PROVIDER_TYPE" == openai ]]
+[[ "$AUTH_PROVIDER_BASE_URL" == http://litellm.automation:4000/v1 ]]
+[[ "$AUTH_MODEL" == 'Personal: gpt-5.6-terra' ]]
+[[ "$AUTH_PROVIDER_API_KEY" == fixture-key && "$AUTH_OFFLINE" == true ]]
+write_auth_config
+read_auth_config "$AUTH_CONFIG_FILE"
+[[ "$AUTH_PROVIDER_API_KEY" == fixture-key && "$AUTH_OFFLINE" == true ]]
+
 write_values github "" "" "" "" false
 clear_stack_auth_environment
 load_auth >/dev/null
@@ -422,6 +480,74 @@ fi
 WORKSPACE="$ENTRYPOINT_TEST_ROOT/workspace"
 COPILOT_CONFIG_DIR="$WORKSPACE/.copilot"
 mkdir -p -- "$COPILOT_CONFIG_DIR" "$STACK_CONFIG_DIR"
+
+(
+    STACK_CONFIG_DIR="$ENTRYPOINT_TEST_ROOT/fresh-stack"
+    COPILOT_CONFIG_DIR="$ENTRYPOINT_TEST_ROOT/fresh-workspace/.copilot"
+    setup_central_config_link
+    [[ -f "$COPILOT_CONFIG_DIR/config.json" && ! -e "$STACK_CONFIG_DIR/config.json" ]]
+    node -e 'if (Object.keys(require(process.argv[1])).length) process.exit(1)' "$COPILOT_CONFIG_DIR/config.json"
+
+    # Empty files are uninitialized state; the central file remains untouched.
+    : >"$STACK_CONFIG_DIR/config.json"
+    : >"$COPILOT_CONFIG_DIR/config.json"
+    setup_central_config_link
+    [[ ! -s "$STACK_CONFIG_DIR/config.json" ]]
+    node -e 'if (Object.keys(require(process.argv[1])).length) process.exit(1)' "$COPILOT_CONFIG_DIR/config.json"
+
+    printf '\357\273\277{"central":"preserved"}\n' >"$STACK_CONFIG_DIR/config.json"
+    printf '\357\273\277 \r\n' >"$COPILOT_CONFIG_DIR/config.json"
+    cp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    setup_central_config_link
+    cmp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    node -e 'if (require(process.argv[1]).central !== "preserved") process.exit(1)' "$COPILOT_CONFIG_DIR/config.json"
+
+    # Copilot writes a leading comment header to its managed config.json.
+    printf '\357\273\277// User settings belong in settings.json.\r\n// This file is managed automatically.\r\n{"central":"preserved"}\n' >"$STACK_CONFIG_DIR/config.json"
+    printf '// User settings belong in settings.json.\n// This file is managed automatically.\n{"url":"https://example.test/path//value","central":"old"}\n' >"$COPILOT_CONFIG_DIR/config.json"
+    cp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    setup_central_config_link
+    cmp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    node -e '
+const config = require(process.argv[1]);
+if (config.central !== "preserved" || config.url !== "https://example.test/path//value") process.exit(1);
+' "$COPILOT_CONFIG_DIR/config.json"
+    link_central_config_for_login
+    [[ -L "$COPILOT_CONFIG_DIR/config.json" ]]
+    node -e '
+const config = require(process.argv[1]);
+if (config.central !== "preserved" || JSON.stringify(config.trusted_folders) !== JSON.stringify(["/workspace"])) process.exit(1);
+' "$STACK_CONFIG_DIR/config.json"
+    setup_central_config_link
+    cp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+
+    # Invalid nonempty JSON must fail, without rewriting either source file.
+    for invalid_config in '{bad-json' '[]' 'null' $'// Managed header\n{bad-json'; do
+        printf '%s' "$invalid_config" >"$COPILOT_CONFIG_DIR/config.json"
+        if setup_central_config_link 2>"$ENTRYPOINT_TEST_ROOT/config-error"; then
+            echo "Invalid workspace config was accepted." >&2
+            exit 1
+        fi
+        [[ "$(<"$COPILOT_CONFIG_DIR/config.json")" == "$invalid_config" ]]
+        grep -q 'workspace config.json is unreadable or invalid' "$ENTRYPOINT_TEST_ROOT/config-error"
+        cmp -- "$STACK_CONFIG_DIR/config.json" "$STACK_CONFIG_DIR/original.json"
+    done
+    printf '{}\n' >"$COPILOT_CONFIG_DIR/config.json"
+    printf '{bad-json' >"$STACK_CONFIG_DIR/config.json"
+    if setup_central_config_link 2>"$ENTRYPOINT_TEST_ROOT/config-error"; then
+        echo "Invalid central config was accepted." >&2
+        exit 1
+    fi
+    grep -q 'central config.json is unreadable or invalid' "$ENTRYPOINT_TEST_ROOT/config-error"
+    [[ "$(<"$COPILOT_CONFIG_DIR/config.json")" == '{}' ]]
+    [[ "$(<"$STACK_CONFIG_DIR/config.json")" == '{bad-json' ]]
+    if link_central_config_for_login 2>/dev/null; then
+        echo "Login accepted invalid central config." >&2
+        exit 1
+    fi
+    [[ ! -L "$COPILOT_CONFIG_DIR/config.json" ]]
+)
+
 printf '{"central":"forced","trusted_folders":["/workspace"]}\n' >"$STACK_CONFIG_DIR/config.json"
 printf '{"workspaceOnly":"preserved","central":"workspace-value","trusted_folders":["/workspace/project"]}\n' >"$COPILOT_CONFIG_DIR/config.json"
 setup_central_config_link

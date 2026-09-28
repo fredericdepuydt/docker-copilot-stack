@@ -11,6 +11,7 @@ $global:CopilotTestPromptResponses = @()
 
 function global:docker-compose {
     $global:CopilotTestDockerArgs = @($args)
+    $global:CopilotTestBuildTarget = $env:COPILOT_BUILD_TARGET
     $global:LASTEXITCODE = $global:CopilotTestDockerExitCode
 }
 
@@ -94,7 +95,9 @@ function Set-WorkspaceFile {
         [string]$RootPath,
 
         [Parameter(Mandatory)]
-        [string]$WorkspacePath
+        [string]$WorkspacePath,
+
+        [string]$TargetSetting = ""
     )
 
     $content = @"
@@ -111,6 +114,7 @@ function Set-WorkspaceFile {
     },
   ],
   "settings": {
+    $TargetSetting
     "url": "https://example.test/path"
   },
 }
@@ -158,6 +162,7 @@ try {
     New-Item -ItemType Directory -Path $equalDirectory | Out-Null
     Set-WorkspaceFile -Path (Join-Path $equalDirectory "equal.code-workspace") -RootPath "." -WorkspacePath "."
     Invoke-TestLauncher -WorkingDirectory $equalDirectory -Arguments @("--help") | Out-Null
+    Assert-Equal -Expected "base" -Actual $global:CopilotTestBuildTarget -Message "Absent setting defaults to base."
     Assert-Equal -Expected "/workspace" -Actual (Get-DockerArgumentAfter "--workdir") -Message "Equal Root/Workspace cwd."
     Assert-Equal -Expected "/workspace/.copilot" -Actual ((Get-DockerArgumentAfter "-e") -replace "^COPILOT_CONFIG_DIR=", "") -Message "Workspace Copilot config path."
 
@@ -171,7 +176,6 @@ try {
     Invoke-TestLauncher -WorkingDirectory $nestedWorkspace -Arguments @("chat", "--model", "test-model") | Out-Null
     Assert-Equal -Expected "/workspace/Applications/Area/My Application" -Actual (Get-DockerArgumentAfter "--workdir") -Message "Nested workspace cwd."
     Assert-Equal -Expected "${rootWithSpaces}:/workspace" -Actual (Get-DockerArgumentAfter "-v") -Message "Root mount with spaces."
-    Assert-Equal -Expected "--name" -Actual (Get-DockerArgumentAfter "--name") -Message "Container name option."
     Assert-True -Condition ((Get-DockerArgumentAfter "--name") -match "^copilot-nested-\d{8}-\d{6}$") -Message "Unexpected workspace container name."
     Assert-Equal -Expected "COPILOT_CONFIG_DIR=/workspace/Applications/Area/My Application/.copilot" -Actual (Get-DockerArgumentAfter "-e") -Message "Workspace Copilot config path."
     Assert-True -Condition (Test-Path -LiteralPath (Join-Path $workspaceCopilotDirectory "existing-state")) -Message "Workspace .copilot files were modified."
@@ -197,6 +201,29 @@ try {
     Invoke-TestLauncher -WorkingDirectory $nestedWorkspace -Arguments @("--stack-show-auth") | Out-Null
     Assert-Equal -Expected "show-auth" -Actual $global:CopilotTestDockerArgs[-1] -Message "Stack management command."
     Assert-Equal -Expected "copilot" -Actual $global:CopilotTestDockerArgs[-2] -Message "Stack management service."
+    Assert-Equal -Expected "base" -Actual $global:CopilotTestBuildTarget -Message "Stack management uses base."
+
+    $targetDirectory = Join-Path $testRoot "targets"
+    New-Item -ItemType Directory -Path $targetDirectory | Out-Null
+    $previousTarget = $env:COPILOT_BUILD_TARGET
+    try {
+        $env:COPILOT_BUILD_TARGET = "inherited-target"
+        foreach ($setting in @('"dotnet"', '"base"', '""', '"   "', 'null', 'absent')) {
+            $targetSetting = if ($setting -eq 'absent') { "" } else { '"copilot.dockerBuildTarget": ' + $setting + ',' }
+            Set-WorkspaceFile -Path (Join-Path $targetDirectory "target.code-workspace") -RootPath "." -WorkspacePath "." -TargetSetting $targetSetting
+            Invoke-TestLauncher -WorkingDirectory $targetDirectory -Arguments @("--help") | Out-Null
+            $expectedTarget = if ($setting -eq '"dotnet"') { "dotnet" } else { "base" }
+            Assert-Equal -Expected $expectedTarget -Actual $global:CopilotTestBuildTarget -Message "Workspace target $setting."
+            Assert-Equal -Expected "inherited-target" -Actual $env:COPILOT_BUILD_TARGET -Message "Caller environment restored."
+        }
+        foreach ($setting in @('"unknown"', '"Dotnet"', 'true', '42', '[]', '{}')) {
+            Set-WorkspaceFile -Path (Join-Path $targetDirectory "target.code-workspace") -RootPath "." -WorkspacePath "." -TargetSetting ('"copilot.dockerBuildTarget": ' + $setting + ',')
+            Assert-ThrowsLike -Action { Invoke-TestLauncher -WorkingDirectory $targetDirectory | Out-Null } -Pattern "*Invalid copilot.dockerBuildTarget*" -Message "Invalid target $setting."
+            Assert-Equal -Expected 0 -Actual $global:CopilotTestDockerArgs.Count -Message "Invalid target invoked Compose."
+        }
+    } finally {
+        $env:COPILOT_BUILD_TARGET = $previousTarget
+    }
 
     $composeContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) "docker-compose.yaml") -Raw
     Assert-True `
@@ -216,12 +243,14 @@ try {
     $createdData = Read-WorkspaceConfiguration -WorkspaceFile (Get-Item -LiteralPath $createdWorkspaceFile)
     Assert-Equal -Expected $createDirectory -Actual $createdData.Root -Message "Created Root path."
     Assert-Equal -Expected $createDirectory -Actual $createdData.Workspace -Message "Created Workspace path."
+    Assert-Equal -Expected "base" -Actual $global:CopilotTestBuildTarget -Message "Created workspace defaults to base."
 
     $declineDirectory = Join-Path $testRoot "creation declined"
     New-Item -ItemType Directory -Path $declineDirectory | Out-Null
     $declineOutput = Invoke-TestLauncher -WorkingDirectory $declineDirectory -PromptResponses @("n")
     Assert-True -Condition (-not (Test-Path -LiteralPath (Join-Path $declineDirectory "$((Split-Path -Leaf $declineDirectory)).code-workspace"))) -Message "Declining creation still created a file."
     Assert-True -Condition (($declineOutput | Out-String) -like "*<current directory defaults>*") -Message "Default workspace display was missing."
+    Assert-Equal -Expected "base" -Actual $global:CopilotTestBuildTarget -Message "No workspace defaults to base."
 
     $multipleDirectory = Join-Path $testRoot "multiple"
     $selectedWorkspace = Join-Path $multipleDirectory "selected"
@@ -292,6 +321,7 @@ try {
     Remove-Item Function:\global:docker-compose -ErrorAction SilentlyContinue
     Remove-Item Function:\global:Read-Host -ErrorAction SilentlyContinue
     Remove-Variable CopilotTestDockerArgs -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable CopilotTestBuildTarget -Scope Global -ErrorAction SilentlyContinue
     Remove-Variable CopilotTestDockerExitCode -Scope Global -ErrorAction SilentlyContinue
     Remove-Variable CopilotTestPromptResponses -Scope Global -ErrorAction SilentlyContinue
 }
