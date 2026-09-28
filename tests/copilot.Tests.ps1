@@ -235,6 +235,14 @@ try {
         -Workspace "c:\source\codebase\Applications\MyApplication"
     Assert-Equal -Expected "Applications\MyApplication" -Actual $windowsRelative -Message "Windows drive relative path."
 
+    $dockerHostPath = ConvertTo-DockerHostPath -Path "/mnt/c/Source/Codebase"
+    $expectedDockerHostPath = if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+        "C:\Source\Codebase"
+    } else {
+        "/mnt/c/Source/Codebase"
+    }
+    Assert-Equal -Expected $expectedDockerHostPath -Actual $dockerHostPath -Message "Docker host path conversion."
+
     $createDirectory = Join-Path $testRoot "creation accepted"
     New-Item -ItemType Directory -Path $createDirectory | Out-Null
     Invoke-TestLauncher -WorkingDirectory $createDirectory -PromptResponses @("") | Out-Null

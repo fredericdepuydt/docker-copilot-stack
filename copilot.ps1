@@ -232,6 +232,26 @@ function Get-RelativeWorkspacePath {
     }
 }
 
+function ConvertTo-DockerHostPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT -and
+        $Path -match "^/mnt/([A-Za-z])(?:/(.*))?$") {
+        $drive = $Matches[1].ToUpperInvariant()
+        $remainder = if ($null -eq $Matches[2]) { "" } else { $Matches[2].Replace("/", "\") }
+        if ([string]::IsNullOrEmpty($remainder)) {
+            return "${drive}:\"
+        } else {
+            return "${drive}:\$remainder"
+        }
+    }
+
+    return $Path
+}
+
 function Select-WorkspaceFile {
     param(
         [Parameter(Mandatory)]
@@ -459,6 +479,7 @@ function Invoke-CopilotLauncher {
     } else {
         "/workspace/$containerRelativePath"
     }
+    $dockerRoot = ConvertTo-DockerHostPath -Path $root
     $containerConfig = "$containerWorkspace/.copilot"
     $projectName = Split-Path -Leaf $workspace
     if ($null -ne $workspaceFile) {
@@ -470,7 +491,7 @@ function Invoke-CopilotLauncher {
     Write-Host ("Docker build target: {0}" -f $buildTarget)
     Write-Host ("Host root:          {0}" -f $root)
     Write-Host ("Host workspace:     {0}" -f $workspace)
-    Write-Host ("Docker mount:       {0} -> /workspace" -f $root)
+    Write-Host ("Docker mount:       {0} -> /workspace" -f $dockerRoot)
     Write-Host ("Container cwd:      {0}" -f $containerWorkspace)
     Write-Host ("Copilot workspace state: {0}" -f $containerConfig)
     Write-Host ("Container name:     {0}" -f $containerName)
@@ -487,7 +508,7 @@ function Invoke-CopilotLauncher {
         "-f", $composeFile,
         "run", "--rm",
         "--name", $containerName,
-        "-v", "${root}:/workspace",
+        "-v", "${dockerRoot}:/workspace",
         "--workdir", $containerWorkspace,
         "-e", "COPILOT_CONFIG_DIR=$containerConfig",
         "copilot",
